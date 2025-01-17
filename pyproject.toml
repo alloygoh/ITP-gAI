@@ -11,4 +11,5 @@ dependencies = [
     "langchain-community>=0.3.14",
     "pypdf>=5.1.0",
     "faiss-cpu>=1.9.0.post1",
+    "xmltodict>=0.14.2",
 ]

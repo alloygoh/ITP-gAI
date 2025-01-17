@@ -11,3 +11,6 @@ wheels/
 
 # IDE
 .zed
+
+# Others
+.DS_Store
