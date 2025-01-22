@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import json
 from os import environ, getenv
 from sys import argv
@@ -72,7 +73,8 @@ print(response["answer"])
 
 # parse previous response
 response_parsed = response["answer"].split("\n")
-response_parsed = [i for i in response_parsed if len(i) > 0 and i[0].isdigit()]
+# get
+response_parsed = [i.split(".", 1)[1] for i in response_parsed if len(i) > 0 and i[0].isdigit()]
 print(f"[-] response_parsed: {response_parsed}")
 
 
@@ -103,24 +105,29 @@ def build_cwe_vectorstore(cwe_data, embedding_model):
     # )
     return vectorstore
 
+@dataclass
+class CweMapping:
+    vulnerability: str
+    cwe_ids: list[str]
+    scores: list[float]
+    docs: list[Document]
+
 
 # Step 3: Map Vulnerabilities to CWE IDs
 def map_vulnerabilities_to_cwe(
-    vulnerabilities: list[str], vectorstore: VectorStore, k=1
-):
-    mappings = []
-    docs = []
+    vulnerabilities: dict[str, str], vectorstore: VectorStore, k=1
+) -> list[CweMapping]:
+    mapping_results = []
     for vuln in vulnerabilities:
         results = vectorstore.similarity_search_with_score(vuln, k=k)
+        current_mapping = CweMapping(vulnerability=vuln, cwe_ids=[], docs=[], scores=[])
         if results:
             for result in results:
-                mappings.append(
-                    f"{vuln} -> {result[0].metadata['CWE_ID']} (Score: {result[1]})"
-                )
-                docs.append(result[0])
-        else:
-            mappings.append(f"{vuln} -> No match")
-    return mappings, docs
+                current_mapping.cwe_ids.append(result[0].metadata["CWE_ID"])
+                current_mapping.scores.append(result[1])
+                current_mapping.docs.append(result[0])
+        mapping_results.append(current_mapping)
+    return mapping_results
 
 
 # embeddings = OllamaEmbeddings(model="mxbai-embed-large", base_url=BASE_URL)
@@ -129,11 +136,9 @@ cwe_data = load_cwe_data("cwe_dict_clean.json")
 print("building cwe vectorstore...")
 store_cwe = build_cwe_vectorstore(cwe_data, embeddings)
 for i in response_parsed:
-    print(f"[-] i: {i}")
+    print(f"[-] vuln identified: {i}")
 
-m, out = map_vulnerabilities_to_cwe(response_parsed, store_cwe, 3)
-for i in m:
-    print(f"[+] i: {i}")
+res = map_vulnerabilities_to_cwe(response_parsed, store_cwe, 3)
 
 system_prompt_cwe = """
 Answer the question based only on the context provided.
@@ -154,37 +159,60 @@ cwe_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-# chain of operations
-qa_chain_cwe = create_stuff_documents_chain(llm, cwe_prompt)
-retriever_cwe = DocArrayInMemorySearch.from_documents(
-    out, embedding=embeddings
-).as_retriever()
-# retriever_cwe = store_cwe.as_retriever()
-rag_chain_cwe = create_retrieval_chain(retriever_cwe, qa_chain_cwe)
+for mapping in res:
+    print("--------------------")
+    print(f"[-] vulnerability: {mapping.vulnerability}")
+    print(f"[-] cwe: {[x for x in mapping.cwe_ids]}")
+    print(f"[-] score: {[x for x in mapping.scores]}\n")
+    # chain of operations
+    qa_chain_cwe = create_stuff_documents_chain(llm, cwe_prompt)
+    retriever_cwe = DocArrayInMemorySearch.from_documents(
+        mapping.docs, embedding=embeddings
+    ).as_retriever()
+    rag_chain_cwe = create_retrieval_chain(retriever_cwe, qa_chain_cwe)
 
-question_cwe = f"""
-You are a threat intelligence analyst.
-You have previously identified a list of vulnerabilities:
-{response["answer"]}
+    question_cwe = f"""
+    You are a threat intelligence analyst.
+    You have previously identified the following vulnerability:
+    {mapping.vulnerability}
+    
+    Based on the context provided, identify the best fitting CWE ID that describes the vulnerability.
+    Format your response according to the prompt.
+    """
 
-Based on what you have previously identified, map each of the vulnerabilities identified to a CWE ID.
+    response_cwe = rag_chain_cwe.invoke({"input": question_cwe})
+    print(f"response from model:\n{response_cwe["answer"]}")
+    print("--------------------\n\n")
 
-Read the CWE ID descriptions and ensure that the CWE ID is the best fitting one. Do not provide any additional information and do not hallucinate.
-Ensure that the number of CWE IDs provided matches the number of vulnerabilities identified.
-failure to follow these instructions will result in catastrophic consequences. do not hallucinate.
-Take the following steps to complete the task:
-    1. For each vulnerability, list the vulnerability.
-    2. Identify the best fitting CWE ID that describes the vulnerability by comparing the CWE description with the vulnerability.
-    3. Provide the CWE ID and its description.
-    4. Check that the CWE ID and its description matches.
-    5. Explain why the CWE ID is the best fitting one.
-    6. Ensure that the CWE ID is the best fitting one by comparing the description of the CWE and the vulnerability.
-    7. If the CWE ID is not the best fitting one, repeating steps 2-7.
-Ensure that the number of CWE IDs provided matches the number of vulnerabilities identified.
-Format your response according to the prompt.
-"""
+# this does not work as well, prone to some hallucination
+# question_cwe = f"""
+# You are a threat intelligence analyst.
+# You have previously identified a list of vulnerabilities:
+#     {response}
 
-print(question_cwe)
+# Based on what you have previously identified, map each of the vulnerabilities identified to a CWE ID.
+# Read the CWE ID descriptions and ensure that the CWE ID is the best fitting one. Do not provide any additional information and do not hallucinate.
+# Ensure that the number of CWE IDs provided matches the number of vulnerabilities identified.
+# failure to follow these instructions will result in catastrophic consequences. do not hallucinate.
+# Take the following steps to complete the task:
+#     1. For each vulnerability, list the vulnerability.
+#     2. Identify the best fitting CWE ID that describes the vulnerability by comparing the CWE description with the vulnerability.
+#     3. Provide the CWE ID and its description.
+#     4. Check that the CWE ID and its description matches.
+#     5. Explain why the CWE ID is the best fitting one.
+#     6. Ensure that the CWE ID is the best fitting one by comparing the description of the CWE and the vulnerability.
+#     7. If the CWE ID is not the best fitting one, repeating steps 2-7.
+# """
 
-response_cwe = rag_chain_cwe.invoke({"input": question})
-print(response_cwe["answer"])
+
+# relevant_docs = []
+# for mapping in res:
+#     relevant_docs.extend(mapping.docs)
+
+# qa_chain_cwe = create_stuff_documents_chain(llm, cwe_prompt)
+# retriever_cwe = DocArrayInMemorySearch.from_documents(
+#     relevant_docs, embedding=embeddings
+# ).as_retriever()
+# rag_chain_cwe = create_retrieval_chain(retriever_cwe, qa_chain_cwe)
+# response_cwe = rag_chain_cwe.invoke({"input": question_cwe})
+# print(response_cwe["answer"])
