@@ -3,7 +3,7 @@ name = "gai-prompt-engineering"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "docarray>=0.40.0",
     "langchain-ollama>=0.2.2",
@@ -12,4 +12,8 @@ dependencies = [
     "pypdf>=5.1.0",
     "faiss-cpu>=1.9.0.post1",
     "xmltodict>=0.14.2",
+    "langchain-openai>=0.3.1",
+    "python-dotenv>=1.0.1",
+    "langchain-huggingface>=0.1.2",
+    "langchain-chroma>=0.2.0",
 ]
