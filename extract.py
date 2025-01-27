@@ -5,26 +5,53 @@ from json import dump
 with open("cwe-archive.xml", "r") as f:
     data = f.read()
 
-cwe_dict = parse(data)
-cwe_info_sorted = sorted(
-    cwe_dict["Weakness_Catalog"]["Weaknesses"]["Weakness"], key=lambda x: int(x["@ID"])
-)
+cwe_archive = parse(data)
 
-new_set = []
+cwe_info = cwe_archive["Weakness_Catalog"]["Weaknesses"]["Weakness"]
 
-for k in cwe_info_sorted:
+lookup = {}
+
+for k in cwe_info:
     mitigation = (
         [] if k.get("Potential_Mitigations") is None else k["Potential_Mitigations"]
     )
     extended_description = (
         "" if k.get("Extended_Description") is None else k["Extended_Description"]
     )
+    id = f"CWE-{k['@ID']}"
     cwe_entry = {
-        "ID": f"CWE-{k['@ID']}",
+        "ID": id,
         "Description": f"{k['@Name']}. {k['Description']}. {extended_description}",
         "Potential_Mitigations": mitigation,
     }
-    new_set.append(cwe_entry)
+    lookup[id] = cwe_entry
 
-with open("cwe_dict_clean.json", "w") as f:
-    dump(new_set, f, indent=2)
+# get from https://cwe.mitre.org/data/definitions/1400.html
+with open("1400.xml", "r") as f:
+    data = f.read()
+
+cwe_dict = parse(data)["Weakness_Catalog"]
+
+# print(cwe_dict.keys())
+# print(cwe_dict["Categories"]["Category"][0].keys())
+
+categories = []
+for cat in cwe_dict["Categories"]["Category"]:
+    members = []
+    for member in cat["Relationships"]["Has_Member"]:
+        cwe_id = f"CWE-{member['@CWE_ID']}"
+        lookup_result = lookup[cwe_id]
+        members.append(lookup_result)
+    entry = {
+        "category_id": cat["@ID"],
+        "category_name": cat["@Name"],
+        "summary": cat["Summary"],
+        "members": members,
+    }
+    categories.append(entry)
+
+with open("cwe_view_mapping.json", "w") as f:
+    dump(categories, f, indent=2)
+
+# with open("cwe_dict_clean.json", "w") as f:
+#     dump(new_set, f, indent=2)
