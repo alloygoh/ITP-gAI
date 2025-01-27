@@ -1,6 +1,6 @@
 [
   {
-    "category_id": "1396",
+    "category_id": "CWE-1396",
     "category_name": "Comprehensive Categorization: Access Control",
     "summary": "Weaknesses in this category are related to access control.",
     "members": [
@@ -2953,7 +2953,7 @@
     ]
   },
   {
-    "category_id": "1397",
+    "category_id": "CWE-1397",
     "category_name": "Comprehensive Categorization: Comparison",
     "summary": "Weaknesses in this category are related to comparison.",
     "members": [
@@ -3122,7 +3122,7 @@
     ]
   },
   {
-    "category_id": "1398",
+    "category_id": "CWE-1398",
     "category_name": "Comprehensive Categorization: Component Interaction",
     "summary": "Weaknesses in this category are related to component interaction.",
     "members": [
@@ -3223,7 +3223,7 @@
     ]
   },
   {
-    "category_id": "1399",
+    "category_id": "CWE-1399",
     "category_name": "Comprehensive Categorization: Memory Safety",
     "summary": "Weaknesses in this category are related to memory safety.",
     "members": [
@@ -4607,7 +4607,7 @@
     ]
   },
   {
-    "category_id": "1401",
+    "category_id": "CWE-1401",
     "category_name": "Comprehensive Categorization: Concurrency",
     "summary": "Weaknesses in this category are related to concurrency.",
     "members": [
@@ -5155,7 +5155,7 @@
     ]
   },
   {
-    "category_id": "1402",
+    "category_id": "CWE-1402",
     "category_name": "Comprehensive Categorization: Encryption",
     "summary": "Weaknesses in this category are related to encryption.",
     "members": [
@@ -5600,7 +5600,7 @@
     ]
   },
   {
-    "category_id": "1403",
+    "category_id": "CWE-1403",
     "category_name": "Comprehensive Categorization: Exposed Resource",
     "summary": "Weaknesses in this category are related to exposed resource.",
     "members": [
@@ -6421,7 +6421,7 @@
     ]
   },
   {
-    "category_id": "1404",
+    "category_id": "CWE-1404",
     "category_name": "Comprehensive Categorization: File Handling",
     "summary": "Weaknesses in this category are related to file handling.",
     "members": [
@@ -7363,7 +7363,7 @@
     ]
   },
   {
-    "category_id": "1405",
+    "category_id": "CWE-1405",
     "category_name": "Comprehensive Categorization: Improper Check or Handling of Exceptional Conditions",
     "summary": "Weaknesses in this category are related to improper check or handling of exceptional conditions.",
     "members": [
@@ -7681,7 +7681,7 @@
     ]
   },
   {
-    "category_id": "1406",
+    "category_id": "CWE-1406",
     "category_name": "Comprehensive Categorization: Improper Input Validation",
     "summary": "Weaknesses in this category are related to improper input validation.",
     "members": [
@@ -8065,7 +8065,7 @@
     ]
   },
   {
-    "category_id": "1407",
+    "category_id": "CWE-1407",
     "category_name": "Comprehensive Categorization: Improper Neutralization",
     "summary": "Weaknesses in this category are related to improper neutralization.",
     "members": [
@@ -9716,7 +9716,7 @@
     ]
   },
   {
-    "category_id": "1408",
+    "category_id": "CWE-1408",
     "category_name": "Comprehensive Categorization: Incorrect Calculation",
     "summary": "Weaknesses in this category are related to incorrect calculation.",
     "members": [
@@ -9966,7 +9966,7 @@
     ]
   },
   {
-    "category_id": "1409",
+    "category_id": "CWE-1409",
     "category_name": "Comprehensive Categorization: Injection",
     "summary": "Weaknesses in this category are related to injection.",
     "members": [
@@ -11361,7 +11361,7 @@
     ]
   },
   {
-    "category_id": "1410",
+    "category_id": "CWE-1410",
     "category_name": "Comprehensive Categorization: Insufficient Control Flow Management",
     "summary": "Weaknesses in this category are related to insufficient control flow management.",
     "members": [
@@ -11754,7 +11754,7 @@
     ]
   },
   {
-    "category_id": "1411",
+    "category_id": "CWE-1411",
     "category_name": "Comprehensive Categorization: Insufficient Verification of Data Authenticity",
     "summary": "Weaknesses in this category are related to insufficient verification of data authenticity.",
     "members": [
@@ -12063,7 +12063,7 @@
     ]
   },
   {
-    "category_id": "1412",
+    "category_id": "CWE-1412",
     "category_name": "Comprehensive Categorization: Poor Coding Practices",
     "summary": "Weaknesses in this category are related to poor coding practices.",
     "members": [
@@ -13345,7 +13345,7 @@
     ]
   },
   {
-    "category_id": "1413",
+    "category_id": "CWE-1413",
     "category_name": "Comprehensive Categorization: Protection Mechanism Failure",
     "summary": "Weaknesses in this category are related to protection mechanism failure.",
     "members": [
@@ -13715,7 +13715,7 @@
     ]
   },
   {
-    "category_id": "1414",
+    "category_id": "CWE-1414",
     "category_name": "Comprehensive Categorization: Randomness",
     "summary": "Weaknesses in this category are related to randomness.",
     "members": [
@@ -14062,7 +14062,7 @@
     ]
   },
   {
-    "category_id": "1415",
+    "category_id": "CWE-1415",
     "category_name": "Comprehensive Categorization: Resource Control",
     "summary": "Weaknesses in this category are related to resource control.",
     "members": [
@@ -14381,7 +14381,7 @@
     ]
   },
   {
-    "category_id": "1416",
+    "category_id": "CWE-1416",
     "category_name": "Comprehensive Categorization: Resource Lifecycle Management",
     "summary": "Weaknesses in this category are related to resource lifecycle management.",
     "members": [
@@ -16625,7 +16625,7 @@
     ]
   },
   {
-    "category_id": "1417",
+    "category_id": "CWE-1417",
     "category_name": "Comprehensive Categorization: Sensitive Information Exposure",
     "summary": "Weaknesses in this category are related to sensitive information exposure.",
     "members": [
@@ -17222,7 +17222,7 @@
     ]
   },
   {
-    "category_id": "1418",
+    "category_id": "CWE-1418",
     "category_name": "Comprehensive Categorization: Violation of Secure Design Principles",
     "summary": "Weaknesses in this category are related to violation of secure design principles.",
     "members": [

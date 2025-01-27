@@ -42,8 +42,9 @@ for cat in cwe_dict["Categories"]["Category"]:
         cwe_id = f"CWE-{member['@CWE_ID']}"
         lookup_result = lookup[cwe_id]
         members.append(lookup_result)
+    category_id = f"CWE-{cat['@ID']}"
     entry = {
-        "category_id": cat["@ID"],
+        "category_id": category_id,
         "category_name": cat["@Name"],
         "summary": cat["Summary"],
         "members": members,
