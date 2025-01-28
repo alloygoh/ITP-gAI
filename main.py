@@ -342,5 +342,5 @@ for mapping in category_res:
 
     response_cwe = prompt_model(llm, system_prompt_cwe, cwe_retriever, question_cwe)
     logger.info("---CWE ranking---")
-    print(response_cwe)
+    logging.info(response_cwe)
     logger.info("---model response end---\n")
