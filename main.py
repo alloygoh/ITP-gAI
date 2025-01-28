@@ -28,6 +28,10 @@ class CweMapping:
     docs: list[Document]
 
 
+logger = logging.getLogger("gai")
+create_vector_db = getenv("CREATE_VECTOR_DB") == "TRUE"
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
 
@@ -39,8 +43,18 @@ def parse_args():
         help="Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
     )
 
+    parser.add_argument(
+        "--eval",
+        "-e",
+        action="store_true",
+        help="Run the program in evaluation mode",
+    )
+
     # accept the path to the PDF file
-    parser.add_argument("pdf_path", help="Path to the PDF file to be processed")
+    parser.add_argument(
+        "pdf_path",
+        help="Path to the PDF file to be processed. If using evaluation mode, this should be a directory containing multiple PDF files.",
+    )
 
     return parser.parse_args()
 
@@ -186,161 +200,189 @@ def prompt_model(
     return response["answer"]
 
 
-# set up logging to log messages only from this module
-args = parse_args()
-logger = logging.getLogger("gai")
-logger.setLevel(args.log)
-sh = logging.StreamHandler()
-sh.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
-logger.addHandler(sh)
+def process_pdf(pdf_path: str):
+    out: list[str] = []
+    logger = logging.getLogger("gai")
 
-# load env vars from .env file
-load_dotenv()
+    llm = ChatOpenAI(model="gpt-4o")
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
 
-create_vector_db = getenv("CREATE_VECTOR_DB") == "TRUE"
+    # load PDF
+    # TODO: find better parsers and tokeniser or what not
+    loader = PyPDFLoader(pdf_path)
+    pages = loader.load_and_split()
+    store = DocArrayInMemorySearch.from_documents(pages, embedding=embeddings)
+    retriever = store.as_retriever()
 
-if "OPENAI_API_KEY" not in environ:
-    raise EnvironmentError("Please set the OPENAI_API_KEY environment variable.")
+    system_prompt = """
+    Answer the question based only on the context provided.
+    Do not repeat yourself.
 
-llm = ChatOpenAI(model="gpt-4o")
-embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
-
-# load PDF
-# TODO: find better parsers and tokeniser or what not
-loader = PyPDFLoader(args.pdf_path)
-pages = loader.load_and_split()
-store = DocArrayInMemorySearch.from_documents(pages, embedding=embeddings)
-retriever = store.as_retriever()
-
-system_prompt = """
-Answer the question based only on the context provided.
-Do not repeat yourself.
-
-Context: {context}
-"""
-
-# You are a threat intelligence analyst. look only at the "facts of this case" and "Findings and Basis for Determination" sections.
-question = """
-You are a threat intelligence analyst. Look at the breach report provided.
-what are the vulnerable business process or vulnerabilities identified that lead to a compromise? Be as specific as possible.
-You should state each vulnerability in a sentence, and provide a short description not exceeding 2 sentences.
-if the vulnerability stems from outdated software or a bug in an external software, state that it is a dependency on a vulnerable third-party component and a violation of Secure Design Principles.
-Do not repeat the vulnerabilities and do not provide any additional information.
-If the identified vulnerability is an in-depth version of a previously identified vulnerability, ignore it and move on.
-You should list each vulnerability in a numerical order.
-"""
-response = prompt_model(llm, system_prompt, retriever, question)
-logger.info("---vulnerabilities identified---")
-logger.info(response)
-logger.info("---model response end---\n\n")
-
-
-# parse previous response
-response_parsed = response.split("\n")
-# get rid of the numbering
-response_parsed = [
-    i.split(".", 1)[1] for i in response_parsed if len(i) > 0 and i[0].isdigit()
-]
-
-store_category = get_cwe_vectorstore(embeddings)
-if store_category is None:
-    raise FileNotFoundError("CWE vector db not found. Please build the db first.")
-
-
-logger.debug("---vulnerabilities parsed---")
-for i in response_parsed:
-    logger.debug(f"vuln identified: {i}")
-
-category_res = map_vulnerabilities_to_cwe(response_parsed, store_category, 3)
-
-system_prompt_category = """
-Answer the question based only on the context provided.
-
-Your response should match the following format:
-    Vulnerability: <vulnerability>
-    CWE ID: <CWE ID>
-    CWE Category Description: <description>
-    Explanation: <explanation>
-
-Context: {context}
-"""
-
-for mapping in category_res:
-    logger.debug("---vectorstore search results---")
-    logger.debug(f"vulnerability: {mapping.vulnerability}")
-    logger.debug(f"cwe: {[x for x in mapping.cwe_ids]}")
-    logger.debug(f"score: {[x for x in mapping.scores]}\n")
-    logger.debug("---vectorstore search results end---")
-
-    retriever = DocArrayInMemorySearch.from_documents(
-        mapping.docs, embedding=embeddings
-    ).as_retriever()
-
-    question_category = f"""
-    You are a threat intelligence analyst.
-    You have previously identified the following vulnerability:
-    {mapping.vulnerability}
-
-    Based on the context provided, identify the best fitting CWE category that describes the vulnerability.
-    Format your response according to the prompt.
+    Context: {context}
     """
-    response_category = prompt_model(
-        llm, system_prompt_category, retriever, question_category
-    )
 
-    logger.info("---category identification---")
-    logger.info(response_category)
-    logger.info("---model response end---\n")
+    # You are a threat intelligence analyst. look only at the "facts of this case" and "Findings and Basis for Determination" sections.
+    question = """
+    You are a threat intelligence analyst. Look at the breach report provided.
+    what are the vulnerable business process or vulnerabilities identified that lead to a compromise? Be as specific as possible.
+    You should state each vulnerability in a sentence, and provide a short description not exceeding 2 sentences.
+    if the vulnerability stems from outdated software or a bug in an external software, state that it is a dependency on a vulnerable third-party component and a violation of Secure Design Principles.
+    Do not repeat the vulnerabilities and do not provide any additional information.
+    If the identified vulnerability is an in-depth version of a previously identified vulnerability, ignore it and move on.
+    You should list each vulnerability in a numerical order.
+    """
+    response = prompt_model(llm, system_prompt, retriever, question)
+    logger.info("---vulnerabilities identified---")
+    logger.info(response)
+    logger.info("---model response end---\n\n")
+    out.append(response)
 
-    extracted = search(r"CWE ID: (.*)\n", response_category, MULTILINE)
-    if extracted is None:
-        raise ValueError("unable to extract CWE category from model's response.")
+    # parse previous response
+    response_parsed = response.split("\n")
+    # get rid of the numbering
+    response_parsed = [
+        i.split(".", 1)[1] for i in response_parsed if len(i) > 0 and i[0].isdigit()
+    ]
 
-    cwe_category = extracted.group(1).strip()
+    store_category = get_cwe_vectorstore(embeddings)
+    if store_category is None:
+        raise FileNotFoundError("CWE vector db not found. Please build the db first.")
 
-    # now get top 3 CWEs from the category
-    members_retriever = get_members_from_category(cwe_category, embeddings)
-    if members_retriever is None:
-        raise FileNotFoundError("CWE store corresponding to the category not found.")
+    logger.debug("---vulnerabilities parsed---")
+    for i in response_parsed:
+        logger.debug(f"vuln identified: {i}")
 
-    top_n_cwes = map_vulnerabilities_to_cwe(
-        [mapping.vulnerability], members_retriever, 6
-    )[0]
+    category_res = map_vulnerabilities_to_cwe(response_parsed, store_category, 3)
 
-    logger.debug("---vectorstore search results---")
-    logger.debug(f"cwe: {[x for x in top_n_cwes.cwe_ids]}")
-    logger.debug(f"score: {[x for x in top_n_cwes.scores]}\n")
-    logger.debug("---vectorstore search results end---\n")
-
-    cwe_retriever = DocArrayInMemorySearch.from_documents(
-        top_n_cwes.docs, embedding=embeddings
-    ).as_retriever()
-
-    system_prompt_cwe = """
+    system_prompt_category = """
     Answer the question based only on the context provided.
 
     Your response should match the following format:
-        Ranking: <ranking>
-        Vulnerability Identified: <vulnerability>
+        Vulnerability: <vulnerability>
         CWE ID: <CWE ID>
-        CWE Description: <description>
+        CWE Category Description: <description>
         Explanation: <explanation>
 
     Context: {context}
     """
 
-    question_cwe = f"""
-    You are a threat intelligence analyst.
-    You have previously identified the following vulnerability:
-    {mapping.vulnerability}
+    for mapping in category_res:
+        logger.debug("---vectorstore search results---")
+        logger.debug(f"vulnerability: {mapping.vulnerability}")
+        logger.debug(f"cwe: {[x for x in mapping.cwe_ids]}")
+        logger.debug(f"score: {[x for x in mapping.scores]}\n")
+        logger.debug("---vectorstore search results end---")
 
-    Based on the context provided, rank the CWE IDs that best describes the vulnerability.
-    You should only list the top 3 CWE IDs.
-    Include the identified vulnerability in the response under "Vulnerability Identified".
-    Format your response according to the prompt.
-    """
+        retriever = DocArrayInMemorySearch.from_documents(
+            mapping.docs, embedding=embeddings
+        ).as_retriever()
 
-    response_cwe = prompt_model(llm, system_prompt_cwe, cwe_retriever, question_cwe)
-    logger.info("---CWE ranking---")
-    logging.info(response_cwe)
-    logger.info("---model response end---\n")
+        question_category = f"""
+        You are a threat intelligence analyst.
+        You have previously identified the following vulnerability:
+        {mapping.vulnerability}
+
+        Based on the context provided, identify the best fitting CWE category that describes the vulnerability.
+        Format your response according to the prompt.
+        """
+        response_category = prompt_model(
+            llm, system_prompt_category, retriever, question_category
+        )
+
+        logger.info("---category identification---")
+        logger.info(response_category)
+        logger.info("---model response end---\n")
+        out.append(response_category)
+
+        extracted = search(r"CWE ID: (.*)\n", response_category, MULTILINE)
+        if extracted is None:
+            raise ValueError("unable to extract CWE category from model's response.")
+
+        cwe_category = extracted.group(1).strip()
+
+        # now get top 3 CWEs from the category
+        members_retriever = get_members_from_category(cwe_category, embeddings)
+        if members_retriever is None:
+            raise FileNotFoundError(
+                "CWE store corresponding to the category not found."
+            )
+
+        top_n_cwes = map_vulnerabilities_to_cwe(
+            [mapping.vulnerability], members_retriever, 6
+        )[0]
+
+        logger.debug("---vectorstore search results---")
+        logger.debug(f"cwe: {[x for x in top_n_cwes.cwe_ids]}")
+        logger.debug(f"score: {[x for x in top_n_cwes.scores]}\n")
+        logger.debug("---vectorstore search results end---\n")
+
+        cwe_retriever = DocArrayInMemorySearch.from_documents(
+            top_n_cwes.docs, embedding=embeddings
+        ).as_retriever()
+
+        system_prompt_cwe = """
+        Answer the question based only on the context provided.
+
+        Your response should match the following format:
+            Ranking: <ranking>
+            Vulnerability Identified: <vulnerability>
+            CWE ID: <CWE ID>
+            CWE Description: <description>
+            Explanation: <explanation>
+
+        Context: {context}
+        """
+
+        question_cwe = f"""
+        You are a threat intelligence analyst.
+        You have previously identified the following vulnerability:
+        {mapping.vulnerability}
+
+        Based on the context provided, rank the CWE IDs that best describes the vulnerability.
+        You should only list the top 3 CWE IDs.
+        Include the identified vulnerability in the response under "Vulnerability Identified".
+        Format your response according to the prompt.
+        """
+
+        response_cwe = prompt_model(llm, system_prompt_cwe, cwe_retriever, question_cwe)
+        logger.info("---CWE ranking---")
+        logger.info(response_cwe)
+        logger.info("---model response end---\n")
+        out.append(response_cwe)
+        return out
+
+
+def eval_mode(pdf_paths: str):
+    pdfs = Path(pdf_paths).rglob("*.pdf")
+
+    for pdf in pdfs:
+        for i in range(1, 3):
+            out_path = Path(pdf_paths) / f"{pdf.name[:-4]}_0{i}.log"
+            pdf_result = process_pdf(pdf.as_posix())
+            with open(out_path, "w") as f:
+                f.write("\n".join(pdf_result))
+
+
+def main():
+    # set up logging to log messages only from this module
+    args = parse_args()
+    logger = logging.getLogger("gai")
+    logger.setLevel(args.log)
+    sh = logging.StreamHandler()
+    sh.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    logger.addHandler(sh)
+
+    # load env vars from .env file
+    load_dotenv()
+
+    if "OPENAI_API_KEY" not in environ:
+        raise EnvironmentError("Please set the OPENAI_API_KEY environment variable.")
+
+    if args.eval:
+        eval_mode(args.pdf_path)
+        return
+    process_pdf(args.pdf_path)
+
+
+if __name__ == "__main__":
+    main()
