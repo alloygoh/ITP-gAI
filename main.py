@@ -1,7 +1,11 @@
-from dataclasses import dataclass
 import json
+import logging
+import argparse
+
+from dataclasses import dataclass
 from os import environ, getenv
-from sys import argv
+from pathlib import Path
+from re import MULTILINE, search
 
 from chromadb.errors import InvalidCollectionException
 from dotenv import load_dotenv
@@ -24,6 +28,23 @@ class CweMapping:
     docs: list[Document]
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+
+    # Adding the --log argument to set a specific logging level
+    parser.add_argument(
+        "--log",
+        "-l",
+        default="INFO",
+        help="Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
+    )
+
+    # accept the path to the PDF file
+    parser.add_argument("pdf_path", help="Path to the PDF file to be processed")
+
+    return parser.parse_args()
+
+
 def format_docs(docs: list[Document]) -> str:
     return "\n\n".join(doc.page_content for doc in docs)
 
@@ -35,22 +56,11 @@ def load_cwe_data(cwe_file_path: str) -> list[dict[str, str]]:
             for member in entry["members"]:
                 del member["Potential_Mitigations"]  # drop mitigation for now
         return cwe_data
-        # return [
-        #     {"id": cwe["ID"], "description": cwe["Description"]} for cwe in cwe_data
-        # ]
 
 
 def build_cwe_vectorstores(
     cwe_data: list[dict[str, str]], embedding_model: OpenAIEmbeddings
-) -> tuple[Chroma, Chroma]:
-    cwe_vectorstore = Chroma(
-        embedding_function=embedding_model,
-        collection_metadata={"hnsw:space": "cosine"},
-        persist_directory="./chroma_db",
-        collection_name="cwe",
-        create_collection_if_not_exists=True,
-    )
-
+) -> Chroma:
     category_vectorstore = Chroma(
         embedding_function=embedding_model,
         collection_metadata={"hnsw:space": "cosine"},
@@ -58,78 +68,74 @@ def build_cwe_vectorstores(
         collection_name="cwe_category",
         create_collection_if_not_exists=True,
     )
+    # ensure clearing of data
+    category_vectorstore.delete_collection()
 
     category_desc: list[str] = []
     category_metadata: list[dict[str, str]] = []
     cwe_desc: list[str] = []
     cwe_metadata: list[dict[str, str]] = []
     for entry in cwe_data:
+        category_cwe_id = entry["category_id"]
         category_desc.append(
-            f"{entry['category_id']}: {entry['category_name']}. {entry['summary']}"
+            f"{category_cwe_id}: {entry['category_name']}. {entry['summary']}"
         )
-        category_metadata.append({"CWE_ID": entry["category_id"]})
+        category_metadata.append({"CWE_ID": category_cwe_id})
 
-        cwe_desc.extend(
-            [f"{cwe['ID']}: {cwe['Description']}" for cwe in entry["members"]]
+        cwe_desc = [f"{cwe['ID']}: {cwe['Description']}" for cwe in entry["members"]]
+        cwe_metadata = [{"CWE_ID": cwe["ID"]} for cwe in entry["members"]]
+        Chroma.from_texts(
+            texts=cwe_desc,
+            embedding=embedding_model,
+            metadatas=cwe_metadata,
+            collection_metadata={"hnsw:space": "cosine"},
+            persist_directory="./chroma_db",
+            collection_name=f"{category_cwe_id}-store",
+            create_collection_if_not_exists=True,
         )
-        cwe_metadata.extend([{"CWE_ID": cwe["ID"]} for cwe in entry["members"]])
 
-    category_vectorstore.add_texts(
+    category_vectorstore = Chroma.from_texts(
         texts=category_desc,
         metadatas=category_metadata,
+        embedding=embedding_model,
+        collection_metadata={"hnsw:space": "cosine"},
+        persist_directory="./chroma_db",
+        collection_name="cwe_category",
+        create_collection_if_not_exists=True,
     )
-    cwe_vectorstore.add_texts(
-        texts=cwe_desc,
-        metadatas=cwe_metadata,
-    )
-
-    # descriptions = [f"{cwe['id']}: {cwe['description']}" for cwe in cwe_data]
-    # metadata = [{"CWE_ID": cwe["id"]} for cwe in cwe_data]
-
-    # vectorstore = Chroma.from_texts(
-    #     texts=descriptions,
-    #     embedding=embedding_model,
-    #     metadatas=metadata,
-    #     collection_metadata={"hnsw:space": "cosine"},
-    #     persist_directory="./chroma_db",
-    #     collection_name="cwe",
-    # )
-    return category_vectorstore, cwe_vectorstore
+    return category_vectorstore
 
 
 def load_cwe_vectorstores(embedding: OpenAIEmbeddings):
-    cwe_vectorstore = Chroma(
-        embedding_function=embedding,
-        persist_directory="./chroma_db",
-        collection_name="cwe",
-        create_collection_if_not_exists=False,
-    )
     category_vectorstore = Chroma(
         embedding_function=embedding,
         persist_directory="./chroma_db",
         collection_name="cwe_category",
         create_collection_if_not_exists=False,
     )
-    if (
-        len(cwe_vectorstore.get()["ids"]) == 0
-        or len(category_vectorstore.get()["ids"]) == 0
-    ):
+    if len(category_vectorstore.get()["ids"]) == 0:
         raise InvalidCollectionException
-    return category_vectorstore, cwe_vectorstore
+    return category_vectorstore
 
 
 def get_cwe_vectorstore(
     embeddings: OpenAIEmbeddings,
-) -> tuple[Chroma, Chroma] | tuple[None, None]:
+) -> Chroma | None:
     if create_vector_db:
-        print("loading cwe data...")
+        if Path("./chroma_db").exists():
+            raise FileExistsError(
+                "chroma_db directory already exists. Please delete it first."
+            )
+
+        logger.debug("loading cwe JSON data from disk...")
         cwe_data = load_cwe_data("cwe_view_mapping.json")
-        print("building cwe vectorstore...")
+        logger.debug("cwe data loaded.")
+        logger.debug("building cwe vectorstore...")
         return build_cwe_vectorstores(cwe_data, embeddings)
     try:
         return load_cwe_vectorstores(embeddings)
     except InvalidCollectionException:
-        return None, None
+        return None
 
 
 def map_vulnerabilities_to_cwe(
@@ -146,6 +152,19 @@ def map_vulnerabilities_to_cwe(
                 current_mapping.docs.append(result[0])
         mapping_results.append(current_mapping)
     return mapping_results
+
+
+def get_members_from_category(category_id: str, embedding: OpenAIEmbeddings):
+    try:
+        member_vectorstore = Chroma(
+            embedding_function=embedding,
+            persist_directory="./chroma_db",
+            collection_name=f"{category_id}-store",
+            create_collection_if_not_exists=False,
+        )
+    except InvalidCollectionException:
+        return None
+    return member_vectorstore
 
 
 def prompt_model(
@@ -167,21 +186,28 @@ def prompt_model(
     return response["answer"]
 
 
+# set up logging to log messages only from this module
+args = parse_args()
+logger = logging.getLogger("gai")
+logger.setLevel(args.log)
+sh = logging.StreamHandler()
+sh.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+logger.addHandler(sh)
+
 # load env vars from .env file
 load_dotenv()
 
 create_vector_db = getenv("CREATE_VECTOR_DB") == "TRUE"
 
 if "OPENAI_API_KEY" not in environ:
-    print("Please set the OPENAI_API_KEY environment variable.")
-    exit()
+    raise EnvironmentError("Please set the OPENAI_API_KEY environment variable.")
 
 llm = ChatOpenAI(model="gpt-4o")
 embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
 
 # load PDF
 # TODO: find better parsers and tokeniser or what not
-loader = PyPDFLoader(argv[1])
+loader = PyPDFLoader(args.pdf_path)
 pages = loader.load_and_split()
 store = DocArrayInMemorySearch.from_documents(pages, embedding=embeddings)
 retriever = store.as_retriever()
@@ -204,7 +230,9 @@ If the identified vulnerability is an in-depth version of a previously identifie
 You should list each vulnerability in a numerical order.
 """
 response = prompt_model(llm, system_prompt, retriever, question)
-print(response)
+logger.info("---vulnerabilities identified---")
+logger.info(response)
+logger.info("---model response end---\n\n")
 
 
 # parse previous response
@@ -213,19 +241,19 @@ response_parsed = response.split("\n")
 response_parsed = [
     i.split(".", 1)[1] for i in response_parsed if len(i) > 0 and i[0].isdigit()
 ]
-print(f"[-] response_parsed: {response_parsed}")
 
-store_category, store_cwe = get_cwe_vectorstore(embeddings)
-if store_cwe is None or store_category is None:
-    print("CWE vector db not found. Please build the db first.")
-    exit()
+store_category = get_cwe_vectorstore(embeddings)
+if store_category is None:
+    raise FileNotFoundError("CWE vector db not found. Please build the db first.")
 
+
+logger.debug("---vulnerabilities parsed---")
 for i in response_parsed:
-    print(f"[-] vuln identified: {i}")
+    logger.debug(f"vuln identified: {i}")
 
 category_res = map_vulnerabilities_to_cwe(response_parsed, store_category, 3)
 
-system_prompt_cwe = """
+system_prompt_category = """
 Answer the question based only on the context provided.
 
 Your response should match the following format:
@@ -238,15 +266,17 @@ Context: {context}
 """
 
 for mapping in category_res:
-    print("--------------------")
-    print(f"[-] vulnerability: {mapping.vulnerability}")
-    print(f"[-] cwe: {[x for x in mapping.cwe_ids]}")
-    print(f"[-] score: {[x for x in mapping.scores]}\n")
+    logger.debug("---vectorstore search results---")
+    logger.debug(f"vulnerability: {mapping.vulnerability}")
+    logger.debug(f"cwe: {[x for x in mapping.cwe_ids]}")
+    logger.debug(f"score: {[x for x in mapping.scores]}\n")
+    logger.debug("---vectorstore search results end---")
+
     retriever = DocArrayInMemorySearch.from_documents(
         mapping.docs, embedding=embeddings
     ).as_retriever()
 
-    question_cwe = f"""
+    question_category = f"""
     You are a threat intelligence analyst.
     You have previously identified the following vulnerability:
     {mapping.vulnerability}
@@ -254,9 +284,63 @@ for mapping in category_res:
     Based on the context provided, identify the best fitting CWE category that describes the vulnerability.
     Format your response according to the prompt.
     """
-    response_cwe = prompt_model(llm, system_prompt_cwe, retriever, question_cwe)
+    response_category = prompt_model(
+        llm, system_prompt_category, retriever, question_category
+    )
 
-    # response_cwe = rag_chain_cwe.invoke({"input": question_cwe})
-    print(f"response from model:\n{response_cwe}")
-    print("--------------------\n\n")
-    break
+    logger.info("---category identification---")
+    logger.info(response_category)
+    logger.info("---model response end---\n")
+
+    extracted = search(r"CWE ID: (.*)\n", response_category, MULTILINE)
+    if extracted is None:
+        raise ValueError("unable to extract CWE category from model's response.")
+
+    cwe_category = extracted.group(1).strip()
+
+    # now get top 3 CWEs from the category
+    members_retriever = get_members_from_category(cwe_category, embeddings)
+    if members_retriever is None:
+        raise FileNotFoundError("CWE store corresponding to the category not found.")
+
+    top_n_cwes = map_vulnerabilities_to_cwe(
+        [mapping.vulnerability], members_retriever, 6
+    )[0]
+
+    logger.debug("---vectorstore search results---")
+    logger.debug(f"cwe: {[x for x in top_n_cwes.cwe_ids]}")
+    logger.debug(f"score: {[x for x in top_n_cwes.scores]}\n")
+    logger.debug("---vectorstore search results end---\n")
+
+    cwe_retriever = DocArrayInMemorySearch.from_documents(
+        top_n_cwes.docs, embedding=embeddings
+    ).as_retriever()
+
+    system_prompt_cwe = """
+    Answer the question based only on the context provided.
+
+    Your response should match the following format:
+        Ranking: <ranking>
+        Vulnerability Identified: <vulnerability>
+        CWE ID: <CWE ID>
+        CWE Description: <description>
+        Explanation: <explanation>
+
+    Context: {context}
+    """
+
+    question_cwe = f"""
+    You are a threat intelligence analyst.
+    You have previously identified the following vulnerability:
+    {mapping.vulnerability}
+
+    Based on the context provided, rank the CWE IDs that best describes the vulnerability.
+    You should only list the top 3 CWE IDs.
+    Include the identified vulnerability in the response under "Vulnerability Identified".
+    Format your response according to the prompt.
+    """
+
+    response_cwe = prompt_model(llm, system_prompt_cwe, cwe_retriever, question_cwe)
+    logger.info("---CWE ranking---")
+    print(response_cwe)
+    logger.info("---model response end---\n")
