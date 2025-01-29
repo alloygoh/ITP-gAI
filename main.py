@@ -77,7 +77,6 @@ def build_cwe_vectorstores(
 ) -> Chroma:
     category_vectorstore = Chroma(
         embedding_function=embedding_model,
-        collection_metadata={"hnsw:space": "cosine"},
         persist_directory="./chroma_db",
         collection_name="cwe_category",
         create_collection_if_not_exists=True,
@@ -102,7 +101,6 @@ def build_cwe_vectorstores(
             texts=cwe_desc,
             embedding=embedding_model,
             metadatas=cwe_metadata,
-            collection_metadata={"hnsw:space": "cosine"},
             persist_directory="./chroma_db",
             collection_name=f"{category_cwe_id}-store",
             create_collection_if_not_exists=True,
@@ -112,7 +110,6 @@ def build_cwe_vectorstores(
         texts=category_desc,
         metadatas=category_metadata,
         embedding=embedding_model,
-        collection_metadata={"hnsw:space": "cosine"},
         persist_directory="./chroma_db",
         collection_name="cwe_category",
         create_collection_if_not_exists=True,
@@ -226,9 +223,11 @@ def process_pdf(pdf_path: str):
     You are a threat intelligence analyst. Look at the breach report provided.
     what are the vulnerable business process or vulnerabilities identified that lead to a compromise? Be as specific as possible.
     You should state each vulnerability in a sentence, and provide a short description not exceeding 2 sentences.
-    if the vulnerability stems from outdated software or a bug in an external software, state that it is a dependency on a vulnerable third-party component and a violation of Secure Design Principles.
+    if the vulnerability stems from outdated software or a bug in an external software, state that it is a dependency on a vulnerable third-party component and a violation of Secure Design Principles in your explanation.
     Do not repeat the vulnerabilities and do not provide any additional information.
     If the identified vulnerability is an in-depth version of a previously identified vulnerability, ignore it and move on.
+    If the vulnerability is reasonably inferred from a previous vulnerability, ignore it and move on.
+    Focus on unique vulnerabilities that have not been previously identified.
     You should list each vulnerability in a numerical order.
     """
     response = prompt_model(llm, system_prompt, retriever, question)
@@ -259,10 +258,12 @@ def process_pdf(pdf_path: str):
 
     Your response should match the following format:
         Vulnerability: <vulnerability>
+        Root Cause: <root cause>
         CWE ID: <CWE ID>
         CWE Category Description: <description>
         Explanation: <explanation>
 
+    Focus on the root cause.
     Context: {context}
     """
 
@@ -283,6 +284,14 @@ def process_pdf(pdf_path: str):
         {mapping.vulnerability}
 
         Based on the context provided, identify the best fitting CWE category that describes the vulnerability.
+        If the vulnerability is the result of a business administrative process, pick the CWE category that is more general.
+        If the vulnerability is the result of a technical implementation, pick the CWE category that is more technically specific. Look for keywords.
+        Take the following steps to derive your answer:
+            1. Consider the details of the vulnerability.
+            2. Determine the root cause of the vulnerability.
+            3. Pick the CWE category that best fits the vulnerability.
+            4. If the vulnerability's root cause if a business process, pick the category that is more general.
+            5. Provide a brief explanation of why you chose the category over others.
         Format your response according to the prompt.
         """
         response_category = prompt_model(
@@ -340,6 +349,7 @@ def process_pdf(pdf_path: str):
 
         Based on the context provided, rank the CWE IDs that best describes the vulnerability.
         You should only list the top 3 CWE IDs.
+        Your decision should be informed by the technical details, keywords, and context provided.
         Include the identified vulnerability in the response under "Vulnerability Identified".
         Format your response according to the prompt.
         """
@@ -349,7 +359,7 @@ def process_pdf(pdf_path: str):
         logger.info(response_cwe)
         logger.info("---model response end---\n")
         out.append(response_cwe)
-        return out
+    return out
 
 
 def eval_mode(pdf_paths: str):
@@ -360,7 +370,7 @@ def eval_mode(pdf_paths: str):
             out_path = Path(pdf_paths) / f"{pdf.name[:-4]}_0{i}.log"
             pdf_result = process_pdf(pdf.as_posix())
             with open(out_path, "w") as f:
-                f.write("\n".join(pdf_result))
+                f.write("\n\n".join(pdf_result))
 
 
 def main():
