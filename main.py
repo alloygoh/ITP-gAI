@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import re
 from dataclasses import dataclass
 from os import environ, getenv
 from pathlib import Path
@@ -24,6 +25,7 @@ class CweMapping:
     cwe_ids: list[str]
     scores: list[float]
     docs: list[Document]
+    impact: str
 
 
 # load env vars from .env file
@@ -114,17 +116,26 @@ def get_cwe_vectorstore(
 
 
 def map_vulnerabilities_to_cwe(
-    vulnerabilities: list[str], vectorstore: VectorStore, k: int = 1
+    vulnerabilities: list[str],
+    vectorstore: VectorStore,
+    k: int = 1,
+    impacts: list[str] = [],
 ) -> list[CweMapping]:
     mapping_results: list[CweMapping] = []
-    for vuln in vulnerabilities:
+    for i, vuln in enumerate(vulnerabilities):
         results = vectorstore.similarity_search_with_score(vuln, k=k)
-        current_mapping = CweMapping(vulnerability=vuln, cwe_ids=[], docs=[], scores=[])
-        if results:
-            for result in results:
-                current_mapping.cwe_ids.append(result[0].metadata["CWE_ID"])
-                current_mapping.scores.append(result[1])
-                current_mapping.docs.append(result[0])
+        impact = ""
+        if len(impacts) > i:
+            impact = impacts[i]
+            impact_results = vectorstore.similarity_search_with_score(impact, k=3)
+            results.extend(impact_results)
+        current_mapping = CweMapping(
+            vulnerability=vuln, cwe_ids=[], docs=[], scores=[], impact=impact
+        )
+        for result in results:
+            current_mapping.cwe_ids.append(result[0].metadata["CWE_ID"])
+            current_mapping.scores.append(result[1])
+            current_mapping.docs.append(result[0])
         mapping_results.append(current_mapping)
     return mapping_results
 
@@ -148,6 +159,18 @@ def prompt_model(
     return response["answer"]
 
 
+def get_relevant_details(response: str):
+    vulns = re.findall(r"Vulnerability: (.+)", response)
+    descriptions = re.findall(r"Explanation: (.+)", response)
+    impacts = re.findall(r"Impact: (.+)", response)
+    if not (len(vulns) == len(descriptions) == len(impacts)):
+        return None, None
+    details: list[str] = []
+    for i in range(len(vulns)):
+        details.append(f"{vulns[i]}: {descriptions[i]}")
+    return details, impacts
+
+
 def process_pdf(pdf_path: str):
     out: list[str] = []
     logger = logging.getLogger("gai")
@@ -164,6 +187,12 @@ def process_pdf(pdf_path: str):
     Answer the question based only on the context provided.
     Do not repeat yourself.
 
+    Your response should match the following format:
+    Number: <number>
+    Vulnerability: <vulnerability>
+    Explanation: <explanation>
+    Impact: <impact on the organization>
+
     Context: {context}
     """
 
@@ -171,7 +200,8 @@ def process_pdf(pdf_path: str):
     You are a threat intelligence analyst. Look at the breach report provided.
     what are the vulnerable business process or vulnerabilities identified that lead to a compromise? Be as specific as possible.
     You should state each vulnerability in a sentence, and provide a short description not exceeding 2 sentences.
-    if the vulnerability stems from outdated software or a bug in an external software, state that it is a dependency on a vulnerable third-party component and a violation of Secure Design Principles in your explanation.
+    Include the impact of the vulnerability on the organization in your explanation.
+    if the vulnerability stems from outdated software or a vulnerability in an external software, state that it is a dependency on a vulnerable third-party component and a violation of Secure Design Principles in your explanation.
     Do not repeat the vulnerabilities and do not provide any additional information.
     If the identified vulnerability is an in-depth version of a previously identified vulnerability, ignore it and move on.
     If the vulnerability is reasonably inferred from a previous vulnerability, ignore it and move on.
@@ -183,13 +213,12 @@ def process_pdf(pdf_path: str):
     logger.info(response)
     logger.info("---model response end---\n\n")
     out.append(response)
-
     # parse previous response
-    response_parsed = response.split("\n")
-    # get rid of the numbering
-    response_parsed = [
-        i.split(".", 1)[1] for i in response_parsed if len(i) > 0 and i[0].isdigit()
-    ]
+    response_parsed, impacts = get_relevant_details(response)
+    if response_parsed is None or impacts is None:
+        raise RuntimeError(
+            "Error parsing response. Please check the response format.", response
+        )
 
     store_category = get_cwe_vectorstore(embeddings)
     if store_category is None:
@@ -199,7 +228,7 @@ def process_pdf(pdf_path: str):
     for i in response_parsed:
         logger.debug(f"vuln identified: {i}")
 
-    top_n_cwes = map_vulnerabilities_to_cwe(response_parsed, store_category, 6)
+    top_n_cwes = map_vulnerabilities_to_cwe(response_parsed, store_category, 6, impacts)
     system_prompt_cwe = """
     Answer the question based only on the context provided.
 
@@ -228,11 +257,13 @@ def process_pdf(pdf_path: str):
         You are a threat intelligence analyst.
         You have previously identified the following vulnerability:
         {mapping.vulnerability}
+        impact: {mapping.impact}
 
         Based on the context provided, rank the CWE IDs that best describes the vulnerability.
         You should only list the top 3 CWE IDs.
         Your decision should be informed by the technical details, keywords, and context provided.
         Include the identified vulnerability in the response under "Vulnerability Identified".
+        If the CWEs provided are not relevant to the vulnerability, prioritize the CWEs that best explain the impact of the vulnerability on the organization.
         Format your response according to the prompt.
         """
 
