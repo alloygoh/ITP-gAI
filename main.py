@@ -1,11 +1,9 @@
+import argparse
 import json
 import logging
-import argparse
-
 from dataclasses import dataclass
 from os import environ, getenv
 from pathlib import Path
-from re import MULTILINE, search
 
 from chromadb.errors import InvalidCollectionException
 from dotenv import load_dotenv
@@ -28,6 +26,8 @@ class CweMapping:
     docs: list[Document]
 
 
+# load env vars from .env file
+load_dotenv()
 logger = logging.getLogger("gai")
 create_vector_db = getenv("CREATE_VECTOR_DB") == "TRUE"
 
@@ -263,9 +263,6 @@ def main():
     sh = logging.StreamHandler()
     sh.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     logger.addHandler(sh)
-
-    # load env vars from .env file
-    load_dotenv()
 
     if "OPENAI_API_KEY" not in environ:
         raise EnvironmentError("Please set the OPENAI_API_KEY environment variable.")
