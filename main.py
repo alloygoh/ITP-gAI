@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from os import environ, getenv
 from pathlib import Path
+from time import sleep
 
 from chromadb.errors import InvalidCollectionException
 from dotenv import load_dotenv
@@ -26,6 +27,14 @@ class CweMapping:
     scores: list[float]
     docs: list[Document]
     impact: str
+
+
+@dataclass
+class ProcessMapping:
+    vulnerability: str
+    process_ids: list[str]
+    scores: list[float]
+    docs: list[Document]
 
 
 # load env vars from .env file
@@ -67,6 +76,12 @@ def load_cwe_data(cwe_file_path: str) -> list[dict[str, str]]:
     return [{"id": cwe["ID"], "description": cwe["Description"]} for cwe in cwe_data]
 
 
+def load_process_categories(category_file_path: str) -> list[dict[str, str]]:
+    with open(category_file_path, "r") as file:
+        category_data = json.load(file)
+    return category_data
+
+
 def build_cwe_vectorstores(
     cwe_data: list[dict[str, str]], embedding_model: OpenAIEmbeddings
 ) -> Chroma:
@@ -83,6 +98,22 @@ def build_cwe_vectorstores(
     return vectorstore
 
 
+def build_process_category_vectorstores(
+    proc_data: list[dict[str, str]], embedding: OpenAIEmbeddings
+) -> Chroma:
+    descriptions = [f"{proc['ID']}: {proc['Description']}" for proc in proc_data]
+    metadata = [{"ID": proc["ID"]} for proc in proc_data]
+
+    vectorstore = Chroma.from_texts(
+        texts=descriptions,
+        embedding=embedding,
+        metadatas=metadata,
+        persist_directory="./chroma_db",
+        collection_name="process_categories",
+    )
+    return vectorstore
+
+
 def load_cwe_vectorstores(embedding: OpenAIEmbeddings):
     vectorstore = Chroma(
         embedding_function=embedding,
@@ -95,24 +126,83 @@ def load_cwe_vectorstores(embedding: OpenAIEmbeddings):
     return vectorstore
 
 
-def get_cwe_vectorstore(
+def load_process_category_vectorstores(embedding: OpenAIEmbeddings):
+    vectorstore = Chroma(
+        embedding_function=embedding,
+        persist_directory="./chroma_db",
+        collection_name="process_categories",
+        create_collection_if_not_exists=False,
+    )
+    if len(vectorstore.get()["ids"]) == 0:
+        raise InvalidCollectionException
+    return vectorstore
+
+
+# def get_cwe_vectorstore(
+#     embeddings: OpenAIEmbeddings,
+# ) -> Chroma | None:
+#     if create_vector_db:
+#         if Path("./chroma_db").exists():
+#             raise FileExistsError(
+#                 "chroma_db directory already exists. Please delete it first."
+#             )
+
+#         logger.debug("loading cwe JSON data from disk...")
+#         cwe_data = load_cwe_data("cwe_dict_clean.json")
+#         logger.debug("cwe data loaded.")
+#         logger.debug("building cwe vectorstore...")
+#         return build_cwe_vectorstores(cwe_data, embeddings)
+#     try:
+#         return load_cwe_vectorstores(embeddings)
+#     except InvalidCollectionException:
+#         return None
+
+
+# def get_category_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma | None:
+#     if create_vector_db:
+#         if Path("./chroma_db").exists():
+#             raise FileExistsError(
+#                 "chroma_db directory already exists. Please delete it first."
+#             )
+
+#         logger.debug("loading process category data from disk...")
+#         proc_data = load_cwe_data("process_categories.json")
+#         logger.debug("process category data loaded.")
+#         logger.debug("building process category vectorstore...")
+#         return build_process_category_vectorstores(proc_data, embeddings)
+#     try:
+#         return load_process_category_vectorstores(embeddings)
+#     except InvalidCollectionException:
+#         return None
+
+
+def get_vectorstores(
     embeddings: OpenAIEmbeddings,
-) -> Chroma | None:
+) -> tuple[Chroma, Chroma] | tuple[None, None]:
     if create_vector_db:
         if Path("./chroma_db").exists():
             raise FileExistsError(
                 "chroma_db directory already exists. Please delete it first."
             )
-
+        logger.debug("loading process category data from disk...")
+        proc_data = load_process_categories("process_categories.json")
+        logger.debug("process category data loaded.")
+        logger.debug("building process category vectorstore...")
+        category_vectorstore = build_process_category_vectorstores(
+            proc_data, embeddings
+        )
         logger.debug("loading cwe JSON data from disk...")
         cwe_data = load_cwe_data("cwe_dict_clean.json")
         logger.debug("cwe data loaded.")
         logger.debug("building cwe vectorstore...")
-        return build_cwe_vectorstores(cwe_data, embeddings)
+        cwe_vectorstore = build_cwe_vectorstores(cwe_data, embeddings)
+        return category_vectorstore, cwe_vectorstore
     try:
-        return load_cwe_vectorstores(embeddings)
+        category_vectorstore = load_process_category_vectorstores(embeddings)
+        cwe_vectorstore = load_cwe_vectorstores(embeddings)
+        return category_vectorstore, cwe_vectorstore
     except InvalidCollectionException:
-        return None
+        return None, None
 
 
 def map_vulnerabilities_to_cwe(
@@ -134,6 +224,23 @@ def map_vulnerabilities_to_cwe(
         )
         for result in results:
             current_mapping.cwe_ids.append(result[0].metadata["CWE_ID"])
+            current_mapping.scores.append(result[1])
+            current_mapping.docs.append(result[0])
+        mapping_results.append(current_mapping)
+    return mapping_results
+
+
+def map_vulns_to_processes(
+    vulnerabilities: list[str], vectorstore: VectorStore, k: int = 1
+) -> list[ProcessMapping]:
+    mapping_results: list[ProcessMapping] = []
+    for vuln in vulnerabilities:
+        results = vectorstore.similarity_search_with_score(vuln, k=k)
+        current_mapping = ProcessMapping(
+            vulnerability=vuln, process_ids=[], docs=[], scores=[]
+        )
+        for result in results:
+            current_mapping.process_ids.append(result[0].metadata["ID"])
             current_mapping.scores.append(result[1])
             current_mapping.docs.append(result[0])
         mapping_results.append(current_mapping)
@@ -176,7 +283,14 @@ def process_pdf(pdf_path: str):
     logger = logging.getLogger("gai")
 
     llm = ChatOpenAI(model="gpt-4o")
+    llm_mini = ChatOpenAI(model="gpt-4o-mini")
     embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
+
+    # store_category = get_cwe_vectorstore(embeddings)
+    # store_process = get_category_vectorstore(embeddings)
+    store_process, store_cwe = get_vectorstores(embeddings)
+    if store_cwe is None or store_process is None:
+        raise FileNotFoundError("Vector db not found. Please build the db first.")
 
     loader = PyPDFLoader(pdf_path)
     pages = loader.load_and_split()
@@ -206,7 +320,7 @@ def process_pdf(pdf_path: str):
     If the identified vulnerability is an in-depth version of a previously identified vulnerability, ignore it and move on.
     If the vulnerability is reasonably inferred from a previous vulnerability, ignore it and move on.
     Focus on unique vulnerabilities that have not been previously identified.
-    You should list each vulnerability in a numerical order.
+    You should list each vulnerability in a numerical order and follow the format provided strictly.
     """
     response = prompt_model(llm, system_prompt, retriever, question)
     logger.info("---vulnerabilities identified---")
@@ -220,15 +334,56 @@ def process_pdf(pdf_path: str):
             "Error parsing response. Please check the response format.", response
         )
 
-    store_category = get_cwe_vectorstore(embeddings)
-    if store_category is None:
-        raise FileNotFoundError("CWE vector db not found. Please build the db first.")
-
     logger.debug("---vulnerabilities parsed---")
     for i in response_parsed:
         logger.debug(f"vuln identified: {i}")
 
-    top_n_cwes = map_vulnerabilities_to_cwe(response_parsed, store_category, 6, impacts)
+    # Step 1: Map vulnerabilities to process categories
+    top_n_processes = map_vulns_to_processes(response_parsed, store_process, 3)
+    system_prompt_process = """
+    Answer the question based only on the context provided.
+
+    Your response should match the following format:
+    Vulnerability Identified: <vulnerability>
+    Process Category ID: <ID>
+    Process Category Name: <Name>
+    Explanation: <explanation>
+
+    Context: {context}
+    """
+    for mapping in top_n_processes:
+        logger.debug("---vectorstore search results---")
+        logger.debug(f"vulnerability: {mapping.vulnerability}")
+        logger.debug(f"process: {[x for x in mapping.process_ids]}")
+        logger.debug(f"score: {[x for x in mapping.scores]}\n")
+        logger.debug("---vectorstore search results end---")
+
+        retriever = DocArrayInMemorySearch.from_documents(
+            mapping.docs, embedding=embeddings
+        ).as_retriever()
+
+        question_process = f"""
+        You are a threat intelligence analyst.
+        You have previously identified the following vulnerability:
+        {mapping.vulnerability}
+
+        Based on the context provided, identify the business process most relevant to the cause of the vulnerability.
+        Include the identified vulnerability in the response under "Vulnerability Identified".
+        Format your response according to the prompt.
+        """
+
+        response_process = prompt_model(
+            llm_mini, system_prompt_process, retriever, question_process
+        )
+        logger.info("---Business Process Mapping---")
+        logger.info(response_process)
+        logger.info("---model response end---\n")
+        out.append(response_process)
+        logger.debug("waiting 30 seconds to avoid rate limit...\n")
+
+    # Step 2: Map vulnerabilities to CWEs
+
+    top_n_cwes = map_vulnerabilities_to_cwe(response_parsed, store_cwe, 6, impacts)
     system_prompt_cwe = """
     Answer the question based only on the context provided.
 
