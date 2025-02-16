@@ -1,5 +1,21 @@
 from xmltodict import parse
 from json import dump
+import csv
+import re
+
+mitigation_lookup: dict[str, str] = {}
+
+with open("1400.csv", "r") as f:
+    mitigation_reader = csv.DictReader(f)
+    for row in mitigation_reader:
+        groups = re.findall(r":(\w+):([^:]+)", row["Potential Mitigations"])
+        formatted = ""
+        preliminary = [": ".join(x) for x in groups]
+        for entry in preliminary:
+            if entry.startswith("PHASE") and formatted != "":
+                formatted += "\n"
+            formatted += entry + "\n"
+        mitigation_lookup[f"CWE-{row['CWE-ID']}"] = formatted
 
 # get cwe xml from https://github.com/OWASP/cwe-sdk-javascript/blob/master/raw/cwe-archive.xml
 with open("cwe-archive.xml", "r") as f:
@@ -12,9 +28,7 @@ cwe_info = cwe_archive["Weakness_Catalog"]["Weaknesses"]["Weakness"]
 lookup = {}
 
 for k in cwe_info:
-    mitigation = (
-        [] if k.get("Potential_Mitigations") is None else k["Potential_Mitigations"]
-    )
+    mitigation = mitigation_lookup.get(f"CWE-{k['@ID']}", "")
     extended_description = (
         "" if k.get("Extended_Description") is None else k["Extended_Description"]
     )
@@ -26,14 +40,16 @@ for k in cwe_info:
     }
     lookup[id] = cwe_entry
 
+
+with open("cwe_dict_clean.json", "w") as f:
+    dump(list(lookup.values()), f, indent=2)
+
+
 # get from https://cwe.mitre.org/data/definitions/1400.html
 with open("1400.xml", "r") as f:
     data = f.read()
 
 cwe_dict = parse(data)["Weakness_Catalog"]
-
-# print(cwe_dict.keys())
-# print(cwe_dict["Categories"]["Category"][0].keys())
 
 categories = []
 for cat in cwe_dict["Categories"]["Category"]:
@@ -53,6 +69,3 @@ for cat in cwe_dict["Categories"]["Category"]:
 
 with open("cwe_view_mapping.json", "w") as f:
     dump(categories, f, indent=2)
-
-# with open("cwe_dict_clean.json", "w") as f:
-#     dump(new_set, f, indent=2)
