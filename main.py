@@ -73,7 +73,7 @@ def parse_args():
 def load_cwe_data(cwe_file_path: str) -> list[dict[str, str]]:
     with open(cwe_file_path, "r") as file:
         cwe_data = json.load(file)
-    return [{"id": cwe["ID"], "description": cwe["Description"]} for cwe in cwe_data]
+    return [{"id": cwe["ID"], "description": cwe["Description"], "Potential_Mitigations": cwe["Potential_Mitigations"]} for cwe in cwe_data]
 
 
 def load_process_categories(category_file_path: str) -> list[dict[str, str]]:
@@ -277,6 +277,11 @@ def get_relevant_details(response: str):
         details.append(f"{vulns[i]}: {descriptions[i]}")
     return details, impacts
 
+def get_solution(cwe_id: str):
+    cwe_data = load_cwe_data("cwe_dict_clean.json") #this is loading everytime u call kinda wank
+    potential_mitigations = "".join([data["Potential_Mitigations"] for data in cwe_data if data["id"] == cwe_id.strip()])
+    mitigations = re.findall(r"DESCRIPTION: (.+)", potential_mitigations)
+    return mitigations
 
 def process_pdf(pdf_path: str):
     out: list[str] = []
@@ -396,7 +401,7 @@ def process_pdf(pdf_path: str):
 
     Context: {context}
     """
-
+    cwe_responses = []
     for mapping in top_n_cwes:
         logger.debug("---vectorstore search results---")
         logger.debug(f"vulnerability: {mapping.vulnerability}")
@@ -426,7 +431,54 @@ def process_pdf(pdf_path: str):
         logger.info("---CWE ranking---")
         logger.info(response_cwe)
         logger.info("---model response end---\n")
+        cwe_responses.append(response_cwe)
         out.append(response_cwe)
+
+    for response in cwe_responses:
+        ranking = re.findall(r"Ranking: (.+)", response)
+        vulnerability = re.findall(r"Vulnerability Identified: (.+)", response)
+        cwe_id = re.findall(r"CWE ID: (.+)", response)
+        cwe_description = re.findall(r"CWE Description: (.+)", response)
+        explanation = re.findall(r"Explanation: (.+)", response)
+        if not (len(ranking) == len(vulnerability) == len(cwe_id) == len(cwe_description) == len(explanation)):
+            return None, None
+        details: list[str] = []
+        cwe_id = ["CWE-205","CWE-207","CWE-208"]
+        for i in range(len(vulnerability)):
+            solution = "".join(get_solution(cwe_id[i]))
+            if solution == "":
+                system_prompt_cwe = """
+                Answer the question based only on the context provided.
+                Your response should match the following format:
+                    CWE ID: <CWE ID>
+                    CWE Description: <description>
+                    Explanation: <explanation>
+                    Mitigation: <Mitigation>
+                Context: {context}
+                """
+                retriever = DocArrayInMemorySearch.from_documents(
+                            mapping.docs, embedding=embeddings
+                            ).as_retriever()
+                question_cwe = f"""
+                You are a threat intelligence analyst.
+                You have previously identified the following:
+                CWE ID :{cwe_id[i]}
+                CWE Description: {cwe_description[i]}
+                Explanation: {explanation[i]}
+        
+                Based on the context provided, you are to come up with the mitigation for the described CWE
+                Your decision should be informed by the technical details, keywords, and context provided.
+                Mitigation provided should be relevant to the described CWE
+                Format your response according to the prompt.
+                """
+                response_cwe = prompt_model(llm, system_prompt_cwe, retriever, question_cwe)
+                details.append(response_cwe)
+            else:
+                details.append(f"CWE ID: {cwe_id[i]}\n CWE Description: {cwe_description[i]}\n Explanation: {explanation[i]}\n Mitigation: {solution}\n") 
+        logger.info("---Solutions---")
+        logger.info(" ".join(details))
+        logger.info("---model response end---\n")
+        out.append(details)
     return out
 
 
