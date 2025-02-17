@@ -279,7 +279,7 @@ def get_relevant_details(response: str):
 
 def get_solution(cwe_id: str):
     cwe_data = load_cwe_data("cwe_dict_clean.json") #this is loading everytime u call kinda wank
-    potential_mitigations = "".join([data["Potential_Mitigations"] for data in cwe_data if data["id"] == cwe_id.strip()])
+    potential_mitigations = "".join([data["Potential_Mitigations"] for data in cwe_data if data["id"] == cwe_id])
     mitigations = re.findall(r"DESCRIPTION: (.+)", potential_mitigations)
     return mitigations
 
@@ -443,9 +443,8 @@ def process_pdf(pdf_path: str):
         if not (len(ranking) == len(vulnerability) == len(cwe_id) == len(cwe_description) == len(explanation)):
             return None, None
         details: list[str] = []
-        cwe_id = ["CWE-205","CWE-207","CWE-208"]
         for i in range(len(vulnerability)):
-            solution = "".join(get_solution(cwe_id[i]))
+            solution = "".join(get_solution(cwe_id[i].strip()))
             if solution == "":
                 system_prompt_cwe = """
                 Answer the question based only on the context provided.
