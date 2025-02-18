@@ -75,6 +75,10 @@ def load_cwe_data(cwe_file_path: str) -> list[dict[str, str]]:
         cwe_data = json.load(file)
     return [{"id": cwe["ID"], "description": cwe["Description"], "Potential_Mitigations": cwe["Potential_Mitigations"]} for cwe in cwe_data]
 
+def load_cwe_mitigations(cwe_file_path: str) -> list[dict[str, str]]:
+    with open(cwe_file_path, "r") as file:
+        cwe_data = json.load(file)
+    return [{"id": cwe["ID"], "Potential_Mitigations": cwe["Potential_Mitigations"]} for cwe in cwe_data]
 
 def load_process_categories(category_file_path: str) -> list[dict[str, str]]:
     with open(category_file_path, "r") as file:
@@ -277,8 +281,7 @@ def get_relevant_details(response: str):
         details.append(f"{vulns[i]}: {descriptions[i]}")
     return details, impacts
 
-def get_solution(cwe_id: str):
-    cwe_data = load_cwe_data("cwe_dict_clean.json") #this is loading everytime u call kinda wank
+def get_solution(cwe_data, cwe_id: str):
     potential_mitigations = "".join([data["Potential_Mitigations"] for data in cwe_data if data["id"] == cwe_id])
     mitigations = re.findall(r"DESCRIPTION: (.+)", potential_mitigations)
     return mitigations
@@ -434,6 +437,7 @@ def process_pdf(pdf_path: str):
         cwe_responses.append(response_cwe)
         out.append(response_cwe)
 
+    cwe_data = load_cwe_mitigations("cwe_dict_clean.json")
     for response in cwe_responses:
         ranking = re.findall(r"Ranking: (.+)", response)
         vulnerability = re.findall(r"Vulnerability Identified: (.+)", response)
@@ -444,7 +448,7 @@ def process_pdf(pdf_path: str):
             return None, None
         details: list[str] = []
         for i in range(len(vulnerability)):
-            solution = "".join(get_solution(cwe_id[i].strip()))
+            solution = "".join(get_solution(cwe_data, cwe_id[i].strip()))
             if solution == "":
                 system_prompt_cwe = """
                 Answer the question based only on the context provided.
