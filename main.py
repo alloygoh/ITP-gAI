@@ -5,7 +5,6 @@ import re
 from dataclasses import dataclass
 from os import environ, getenv
 from pathlib import Path
-from time import sleep
 
 from chromadb.errors import InvalidCollectionException
 from dotenv import load_dotenv
@@ -73,12 +72,17 @@ def parse_args():
 def load_cwe_data(cwe_file_path: str) -> list[dict[str, str]]:
     with open(cwe_file_path, "r") as file:
         cwe_data = json.load(file)
-    return [{"id": cwe["ID"], "description": cwe["Description"], "Potential_Mitigations": cwe["Potential_Mitigations"]} for cwe in cwe_data]
+    return [{"id": cwe["ID"], "description": cwe["Description"]} for cwe in cwe_data]
+
 
 def load_cwe_mitigations(cwe_file_path: str) -> list[dict[str, str]]:
     with open(cwe_file_path, "r") as file:
         cwe_data = json.load(file)
-    return [{"id": cwe["ID"], "Potential_Mitigations": cwe["Potential_Mitigations"]} for cwe in cwe_data]
+    return [
+        {"id": cwe["ID"], "potential_mitigations": cwe["Potential_Mitigations"]}
+        for cwe in cwe_data
+    ]
+
 
 def load_process_categories(category_file_path: str) -> list[dict[str, str]]:
     with open(category_file_path, "r") as file:
@@ -140,44 +144,6 @@ def load_process_category_vectorstores(embedding: OpenAIEmbeddings):
     if len(vectorstore.get()["ids"]) == 0:
         raise InvalidCollectionException
     return vectorstore
-
-
-# def get_cwe_vectorstore(
-#     embeddings: OpenAIEmbeddings,
-# ) -> Chroma | None:
-#     if create_vector_db:
-#         if Path("./chroma_db").exists():
-#             raise FileExistsError(
-#                 "chroma_db directory already exists. Please delete it first."
-#             )
-
-#         logger.debug("loading cwe JSON data from disk...")
-#         cwe_data = load_cwe_data("cwe_dict_clean.json")
-#         logger.debug("cwe data loaded.")
-#         logger.debug("building cwe vectorstore...")
-#         return build_cwe_vectorstores(cwe_data, embeddings)
-#     try:
-#         return load_cwe_vectorstores(embeddings)
-#     except InvalidCollectionException:
-#         return None
-
-
-# def get_category_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma | None:
-#     if create_vector_db:
-#         if Path("./chroma_db").exists():
-#             raise FileExistsError(
-#                 "chroma_db directory already exists. Please delete it first."
-#             )
-
-#         logger.debug("loading process category data from disk...")
-#         proc_data = load_cwe_data("process_categories.json")
-#         logger.debug("process category data loaded.")
-#         logger.debug("building process category vectorstore...")
-#         return build_process_category_vectorstores(proc_data, embeddings)
-#     try:
-#         return load_process_category_vectorstores(embeddings)
-#     except InvalidCollectionException:
-#         return None
 
 
 def get_vectorstores(
@@ -254,7 +220,7 @@ def map_vulns_to_processes(
 def prompt_model(
     llm: ChatOpenAI,
     system_prompt: str,
-    retriever: VectorStoreRetriever,
+    retriever: VectorStoreRetriever | None,
     question: str,
 ):
     prompt = ChatPromptTemplate.from_messages(
@@ -281,10 +247,19 @@ def get_relevant_details(response: str):
         details.append(f"{vulns[i]}: {descriptions[i]}")
     return details, impacts
 
-def get_solution(cwe_data, cwe_id: str):
-    potential_mitigations = "".join([data["Potential_Mitigations"] for data in cwe_data if data["id"] == cwe_id])
+
+def get_mitigation(mitigation_data: list[dict[str, str]], cwe_id: str) -> list[str]:
+    # extract descriptions of potential mitigations only, ignoring phases
+    potential_mitigations = "".join(
+        [
+            entry["potential_mitigations"]
+            for entry in mitigation_data
+            if entry["id"] == cwe_id
+        ]
+    )
     mitigations = re.findall(r"DESCRIPTION: (.+)", potential_mitigations)
     return mitigations
+
 
 def process_pdf(pdf_path: str):
     out: list[str] = []
@@ -387,7 +362,6 @@ def process_pdf(pdf_path: str):
         logger.info(response_process)
         logger.info("---model response end---\n")
         out.append(response_process)
-        logger.debug("waiting 30 seconds to avoid rate limit...\n")
 
     # Step 2: Map vulnerabilities to CWEs
 
@@ -437,51 +411,47 @@ def process_pdf(pdf_path: str):
         cwe_responses.append(response_cwe)
         out.append(response_cwe)
 
-    cwe_data = load_cwe_mitigations("cwe_dict_clean.json")
+    mitigations = load_cwe_mitigations("cwe_dict_clean.json")
+    system_prompt_mitigation = """
+    Your response should match the following format:
+
+    Vulnerability: <vulnerability>
+    CWE ID: <CWE ID>
+    Mitigation: <Mitigation>
+    Explanation: <explanation>
+
+    context: {context}
+    """
     for response in cwe_responses:
-        ranking = re.findall(r"Ranking: (.+)", response)
-        vulnerability = re.findall(r"Vulnerability Identified: (.+)", response)
+        vulnerabilities = re.findall(r"Vulnerability Identified: (.+)", response)
         cwe_id = re.findall(r"CWE ID: (.+)", response)
-        cwe_description = re.findall(r"CWE Description: (.+)", response)
-        explanation = re.findall(r"Explanation: (.+)", response)
-        if not (len(ranking) == len(vulnerability) == len(cwe_id) == len(cwe_description) == len(explanation)):
+        if not (len(vulnerabilities) == len(cwe_id)):
             return None, None
-        details: list[str] = []
-        for i in range(len(vulnerability)):
-            solution = "".join(get_solution(cwe_data, cwe_id[i].strip()))
-            if solution == "":
-                system_prompt_cwe = """
-                Answer the question based only on the context provided.
-                Your response should match the following format:
-                    CWE ID: <CWE ID>
-                    CWE Description: <description>
-                    Explanation: <explanation>
-                    Mitigation: <Mitigation>
-                Context: {context}
-                """
-                retriever = DocArrayInMemorySearch.from_documents(
-                            mapping.docs, embedding=embeddings
-                            ).as_retriever()
-                question_cwe = f"""
+        vuln_mitigations: list[str] = []
+        for i in range(len(vulnerabilities)):
+            mitigation = "".join(get_mitigation(mitigations, cwe_id[i].strip()))
+            if mitigation == "":
+                question_mitigation = f"""
                 You are a threat intelligence analyst.
-                You have previously identified the following:
+                You have previously identified the following vulnerability:
+                Vulnerability Identified: {vulnerabilities[i]}
                 CWE ID :{cwe_id[i]}
-                CWE Description: {cwe_description[i]}
-                Explanation: {explanation[i]}
-        
-                Based on the context provided, you are to come up with the mitigation for the described CWE
-                Your decision should be informed by the technical details, keywords, and context provided.
-                Mitigation provided should be relevant to the described CWE
+
+                Based on the context provided, you are to come up with the mitigation for the described vulnerability.
+                Mitigations provided should tackle the root cause of the vulnerability.
                 Format your response according to the prompt.
                 """
-                response_cwe = prompt_model(llm, system_prompt_cwe, retriever, question_cwe)
-                details.append(response_cwe)
+                response_mitigation = prompt_model(
+                    llm, system_prompt_mitigation, retriever, question_mitigation
+                )
+                vuln_mitigation = f"***{response_mitigation}***\n"
             else:
-                details.append(f"CWE ID: {cwe_id[i]}\n CWE Description: {cwe_description[i]}\n Explanation: {explanation[i]}\n Mitigation: {solution}\n") 
+                vuln_mitigation = f"Vulnerability: {vulnerabilities[i]}\nCWE ID: {cwe_id[i]}\nMitigation: {mitigation}\n"
+            vuln_mitigations.append(vuln_mitigation)
         logger.info("---Solutions---")
-        logger.info(" ".join(details))
+        logger.info("\n".join(vuln_mitigations))
         logger.info("---model response end---\n")
-        out.append(details)
+        out.append("\n".join(vuln_mitigations))
     return out
 
 
