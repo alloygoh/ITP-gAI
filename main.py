@@ -220,7 +220,7 @@ def map_vulns_to_processes(
 def prompt_model(
     llm: ChatOpenAI,
     system_prompt: str,
-    retriever: VectorStoreRetriever | None,
+    retriever: VectorStoreRetriever,
     question: str,
 ):
     prompt = ChatPromptTemplate.from_messages(
@@ -369,16 +369,16 @@ def process_pdf(pdf_path: str):
     system_prompt_cwe = """
     Answer the question based only on the context provided.
 
-    Your response should match the following format:
-        Ranking: <ranking>
-        Vulnerability Identified: <vulnerability>
-        CWE ID: <CWE ID>
-        CWE Description: <description>
-        Explanation: <explanation>
+    Your response should match the following format only:
+    Ranking: <ranking>
+    Vulnerability Identified: <vulnerability>
+    CWE ID: <CWE ID>
+    CWE Description: <description>
+    Explanation: <explanation>
 
     Context: {context}
     """
-    cwe_responses = []
+    cwe_responses: list[str] = []
     for mapping in top_n_cwes:
         logger.debug("---vectorstore search results---")
         logger.debug(f"vulnerability: {mapping.vulnerability}")
@@ -401,7 +401,7 @@ def process_pdf(pdf_path: str):
         Your decision should be informed by the technical details, keywords, and context provided.
         Include the identified vulnerability in the response under "Vulnerability Identified".
         If the CWEs provided are not relevant to the vulnerability, prioritize the CWEs that best explain the impact of the vulnerability on the organization.
-        Format your response according to the prompt.
+        Format your response according to the format in the prompt.
         """
 
         response_cwe = prompt_model(llm, system_prompt_cwe, retriever, question_cwe)
@@ -425,7 +425,7 @@ def process_pdf(pdf_path: str):
     for response in cwe_responses:
         vulnerabilities = re.findall(r"Vulnerability Identified: (.+)", response)
         cwe_id = re.findall(r"CWE ID: (.+)", response)
-        if not (len(vulnerabilities) == len(cwe_id)):
+        if len(vulnerabilities) != len(cwe_id):
             return None, None
         vuln_mitigations: list[str] = []
         for i in range(len(vulnerabilities)):
