@@ -417,7 +417,7 @@ def process_pdf(pdf_path: str):
 
     Vulnerability: <vulnerability>
     CWE ID: <CWE ID>
-    Mitigation: <Mitigation>
+    Mitigation: ***<Mitigation>***
     Explanation: <explanation>
 
     context: {context}
@@ -444,7 +444,7 @@ def process_pdf(pdf_path: str):
                 response_mitigation = prompt_model(
                     llm, system_prompt_mitigation, retriever, question_mitigation
                 )
-                vuln_mitigation = f"***{response_mitigation}***\n"
+                vuln_mitigation = f"{response_mitigation}\n"
             else:
                 vuln_mitigation = f"Vulnerability: {vulnerabilities[i]}\nCWE ID: {cwe_id[i]}\nMitigation: {mitigation}\n"
             vuln_mitigations.append(vuln_mitigation)
