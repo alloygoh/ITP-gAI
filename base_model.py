@@ -1,17 +1,14 @@
 import argparse
-import json
 import logging
 import re
 from dataclasses import dataclass
 from os import environ, getenv
 from pathlib import Path
 
-from chromadb.errors import InvalidCollectionException
 from dotenv import load_dotenv
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.prompts import ChatPromptTemplate
-from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import DocArrayInMemorySearch
 from langchain_core.documents import Document
@@ -272,7 +269,7 @@ def eval_mode(pdf_paths: str):
             out_path = Path(pdf_paths) / f"{pdf.name[:-4]}_0{i}.log"
             pdf_result = process_pdf(pdf.as_posix())
             with open(out_path, "w") as f:
-                f.write("\n\n".join(pdf_result))
+                f.write("\n\n```".join(pdf_result))
 
 
 def main():
