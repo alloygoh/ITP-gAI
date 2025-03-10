@@ -5,7 +5,6 @@ import re
 from dataclasses import dataclass
 from os import environ, getenv
 from pathlib import Path
-from time import sleep
 
 from chromadb.errors import InvalidCollectionException
 from dotenv import load_dotenv
@@ -76,6 +75,15 @@ def load_cwe_data(cwe_file_path: str) -> list[dict[str, str]]:
     return [{"id": cwe["ID"], "description": cwe["Description"]} for cwe in cwe_data]
 
 
+def load_cwe_mitigations(cwe_file_path: str) -> list[dict[str, str]]:
+    with open(cwe_file_path, "r") as file:
+        cwe_data = json.load(file)
+    return [
+        {"id": cwe["ID"], "potential_mitigations": cwe["Potential_Mitigations"]}
+        for cwe in cwe_data
+    ]
+
+
 def load_process_categories(category_file_path: str) -> list[dict[str, str]]:
     with open(category_file_path, "r") as file:
         category_data = json.load(file)
@@ -136,44 +144,6 @@ def load_process_category_vectorstores(embedding: OpenAIEmbeddings):
     if len(vectorstore.get()["ids"]) == 0:
         raise InvalidCollectionException
     return vectorstore
-
-
-# def get_cwe_vectorstore(
-#     embeddings: OpenAIEmbeddings,
-# ) -> Chroma | None:
-#     if create_vector_db:
-#         if Path("./chroma_db").exists():
-#             raise FileExistsError(
-#                 "chroma_db directory already exists. Please delete it first."
-#             )
-
-#         logger.debug("loading cwe JSON data from disk...")
-#         cwe_data = load_cwe_data("cwe_dict_clean.json")
-#         logger.debug("cwe data loaded.")
-#         logger.debug("building cwe vectorstore...")
-#         return build_cwe_vectorstores(cwe_data, embeddings)
-#     try:
-#         return load_cwe_vectorstores(embeddings)
-#     except InvalidCollectionException:
-#         return None
-
-
-# def get_category_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma | None:
-#     if create_vector_db:
-#         if Path("./chroma_db").exists():
-#             raise FileExistsError(
-#                 "chroma_db directory already exists. Please delete it first."
-#             )
-
-#         logger.debug("loading process category data from disk...")
-#         proc_data = load_cwe_data("process_categories.json")
-#         logger.debug("process category data loaded.")
-#         logger.debug("building process category vectorstore...")
-#         return build_process_category_vectorstores(proc_data, embeddings)
-#     try:
-#         return load_process_category_vectorstores(embeddings)
-#     except InvalidCollectionException:
-#         return None
 
 
 def get_vectorstores(
@@ -278,6 +248,19 @@ def get_relevant_details(response: str):
     return details, impacts
 
 
+def get_mitigation(mitigation_data: list[dict[str, str]], cwe_id: str) -> list[str]:
+    # extract descriptions of potential mitigations only, ignoring phases
+    potential_mitigations = "".join(
+        [
+            entry["potential_mitigations"]
+            for entry in mitigation_data
+            if entry["id"] == cwe_id
+        ]
+    )
+    mitigations = re.findall(r"DESCRIPTION: (.+)", potential_mitigations)
+    return mitigations
+
+
 def process_pdf(pdf_path: str):
     out: list[str] = []
     logger = logging.getLogger("gai")
@@ -379,7 +362,6 @@ def process_pdf(pdf_path: str):
         logger.info(response_process)
         logger.info("---model response end---\n")
         out.append(response_process)
-        logger.debug("waiting 30 seconds to avoid rate limit...\n")
 
     # Step 2: Map vulnerabilities to CWEs
 
@@ -387,16 +369,16 @@ def process_pdf(pdf_path: str):
     system_prompt_cwe = """
     Answer the question based only on the context provided.
 
-    Your response should match the following format:
-        Ranking: <ranking>
-        Vulnerability Identified: <vulnerability>
-        CWE ID: <CWE ID>
-        CWE Description: <description>
-        Explanation: <explanation>
+    Your response should match the following format only:
+    Ranking: <ranking>
+    Vulnerability Identified: <vulnerability>
+    CWE ID: <CWE ID>
+    CWE Description: <description>
+    Explanation: <explanation>
 
     Context: {context}
     """
-
+    cwe_responses: list[str] = []
     for mapping in top_n_cwes:
         logger.debug("---vectorstore search results---")
         logger.debug(f"vulnerability: {mapping.vulnerability}")
@@ -419,14 +401,57 @@ def process_pdf(pdf_path: str):
         Your decision should be informed by the technical details, keywords, and context provided.
         Include the identified vulnerability in the response under "Vulnerability Identified".
         If the CWEs provided are not relevant to the vulnerability, prioritize the CWEs that best explain the impact of the vulnerability on the organization.
-        Format your response according to the prompt.
+        Format your response according to the format in the prompt.
         """
 
         response_cwe = prompt_model(llm, system_prompt_cwe, retriever, question_cwe)
         logger.info("---CWE ranking---")
         logger.info(response_cwe)
         logger.info("---model response end---\n")
+        cwe_responses.append(response_cwe)
         out.append(response_cwe)
+
+    mitigations = load_cwe_mitigations("cwe_dict_clean.json")
+    system_prompt_mitigation = """
+    Your response should match the following format:
+
+    Vulnerability: <vulnerability>
+    CWE ID: <CWE ID>
+    Mitigation: ***<Mitigation>***
+    Explanation: <explanation>
+
+    context: {context}
+    """
+    for response in cwe_responses:
+        vulnerabilities = re.findall(r"Vulnerability Identified: (.+)", response)
+        cwe_id = re.findall(r"CWE ID: (.+)", response)
+        if len(vulnerabilities) != len(cwe_id):
+            return None, None
+        vuln_mitigations: list[str] = []
+        for i in range(len(vulnerabilities)):
+            mitigation = "".join(get_mitigation(mitigations, cwe_id[i].strip()))
+            if mitigation == "":
+                question_mitigation = f"""
+                You are a threat intelligence analyst.
+                You have previously identified the following vulnerability:
+                Vulnerability Identified: {vulnerabilities[i]}
+                CWE ID :{cwe_id[i]}
+
+                Based on the context provided, you are to come up with the mitigation for the described vulnerability.
+                Mitigations provided should tackle the root cause of the vulnerability.
+                Format your response according to the prompt.
+                """
+                response_mitigation = prompt_model(
+                    llm, system_prompt_mitigation, retriever, question_mitigation
+                )
+                vuln_mitigation = f"{response_mitigation}\n"
+            else:
+                vuln_mitigation = f"Vulnerability: {vulnerabilities[i]}\nCWE ID: {cwe_id[i]}\nMitigation: {mitigation}\n"
+            vuln_mitigations.append(vuln_mitigation)
+        logger.info("---Solutions---")
+        logger.info("\n".join(vuln_mitigations))
+        logger.info("---model response end---\n")
+        out.append("\n".join(vuln_mitigations))
     return out
 
 
