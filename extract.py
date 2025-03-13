@@ -25,7 +25,7 @@ cwe_archive = parse(data)
 
 cwe_info = cwe_archive["Weakness_Catalog"]["Weaknesses"]["Weakness"]
 
-lookup = {}
+lookup: dict[str, dict[str, str]] = {}
 
 for k in cwe_info:
     mitigation = mitigation_lookup.get(f"CWE-{k['@ID']}", "")
@@ -53,7 +53,7 @@ cwe_dict = parse(data)["Weakness_Catalog"]
 
 categories = []
 for cat in cwe_dict["Categories"]["Category"]:
-    members = []
+    members: list[dict[str, str]] = []
     for member in cat["Relationships"]["Has_Member"]:
         cwe_id = f"CWE-{member['@CWE_ID']}"
         lookup_result = lookup[cwe_id]

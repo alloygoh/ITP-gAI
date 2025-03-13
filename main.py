@@ -43,6 +43,15 @@ create_vector_db = getenv("CREATE_VECTOR_DB") == "TRUE"
 
 
 def parse_args():
+    """
+    Parses command-line arguments.
+
+    Returns:
+        argparse.Namespace: Parsed command-line arguments including:
+            - log (str): Logging level specified by the user (default: "INFO").
+            - eval (bool): Flag indicating whether to run the program in evaluation mode.
+            - pdf_path (str): Path to the PDF file to be processed or a directory containing multiple PDF files if in evaluation mode.
+    """
     parser = argparse.ArgumentParser()
 
     # Adding the --log argument to set a specific logging level
@@ -70,12 +79,30 @@ def parse_args():
 
 
 def load_cwe_data(cwe_file_path: str) -> list[dict[str, str]]:
+    """
+    Load CWE (Common Weakness Enumeration) data from a JSON file.
+
+    Args:
+        cwe_file_path (str): The file path to the CWE JSON file.
+
+    Returns:
+        list[dict[str, str]]: A list of dictionaries, each containing the "id" and "description" of a CWE.
+    """
     with open(cwe_file_path, "r") as file:
         cwe_data = json.load(file)
     return [{"id": cwe["ID"], "description": cwe["Description"]} for cwe in cwe_data]
 
 
 def load_cwe_mitigations(cwe_file_path: str) -> list[dict[str, str]]:
+    """
+    Load CWE mitigations from a JSON file.
+
+    Args:
+        cwe_file_path (str): The file path to the CWE JSON file.
+
+    Returns:
+        list[dict[str, str]]: A list of dictionaries containing CWE IDs and their potential mitigations.
+    """
     with open(cwe_file_path, "r") as file:
         cwe_data = json.load(file)
     return [
@@ -85,6 +112,15 @@ def load_cwe_mitigations(cwe_file_path: str) -> list[dict[str, str]]:
 
 
 def load_process_categories(category_file_path: str) -> list[dict[str, str]]:
+    """
+    Loads APQC categories from a JSON file.
+
+    Args:
+        category_file_path (str): The file path to the JSON file containing category data.
+
+    Returns:
+        list[dict[str, str]]: A list of dictionaries where each dictionary represents a category.
+    """
     with open(category_file_path, "r") as file:
         category_data = json.load(file)
     return category_data
@@ -93,6 +129,17 @@ def load_process_categories(category_file_path: str) -> list[dict[str, str]]:
 def build_cwe_vectorstores(
     cwe_data: list[dict[str, str]], embedding_model: OpenAIEmbeddings
 ) -> Chroma:
+    """
+    Builds a Chroma vector store from a list of CWE data using the specified embedding model.
+
+    Args:
+        cwe_data (list[dict[str, str]]): A list of dictionaries containing CWE data,
+                                         where each dictionary has keys 'id' and 'description'.
+        embedding_model (OpenAIEmbeddings): The embedding model to use for generating embeddings.
+
+    Returns:
+        Chroma: A Chroma vector store containing the embedded CWE descriptions and associated metadata.
+    """
     descriptions = [f"{cwe['id']}: {cwe['description']}" for cwe in cwe_data]
     metadata = [{"CWE_ID": cwe["id"]} for cwe in cwe_data]
 
@@ -109,6 +156,17 @@ def build_cwe_vectorstores(
 def build_process_category_vectorstores(
     proc_data: list[dict[str, str]], embedding: OpenAIEmbeddings
 ) -> Chroma:
+    """
+    Builds a Chroma vector store from a list of process data dictionaries extracted from the APQC PCF using the specified embedding model.
+
+    Args:
+        proc_data (list[dict[str, str]]): A list of dictionaries containing process data.
+            Each dictionary should have keys "ID" and "Description".
+        embedding (OpenAIEmbeddings): The embedding model to use for generating embeddings.
+
+    Returns:
+        Chroma: A Chroma vector store containing the embedded process descriptions and their metadata.
+    """
     descriptions = [f"{proc['ID']}: {proc['Description']}" for proc in proc_data]
     metadata = [{"ID": proc["ID"]} for proc in proc_data]
 
@@ -123,6 +181,22 @@ def build_process_category_vectorstores(
 
 
 def load_cwe_vectorstores(embedding: OpenAIEmbeddings):
+    """
+    Load the CWE vector store using the provided embedding function.
+
+    This function initializes a Chroma vector store with the specified
+    embedding function, under the chroma_db directory, and cwe collection name. If the
+    collection does not exist or is empty, an InvalidCollectionException is raised.
+
+    Args:
+        embedding (OpenAIEmbeddings): The embedding function to use for the vector store.
+
+    Returns:
+        Chroma: The initialized Chroma vector store.
+
+    Raises:
+        InvalidCollectionException: If the collection does not exist or is empty.
+    """
     vectorstore = Chroma(
         embedding_function=embedding,
         persist_directory="./chroma_db",
@@ -135,6 +209,22 @@ def load_cwe_vectorstores(embedding: OpenAIEmbeddings):
 
 
 def load_process_category_vectorstores(embedding: OpenAIEmbeddings):
+    """
+    Loads and returns a Chroma vector store for APQC process categories.
+
+    This function initializes a Chroma vector store using the provided embedding function.
+    It attempts to load the vector store from the chroma_db directory and process_categories collection name.
+    If the collection does not exist or is empty, an InvalidCollectionException is raised.
+
+    Args:
+        embedding (OpenAIEmbeddings): The embedding function to use for the vector store.
+
+    Returns:
+        Chroma: The initialized Chroma vector store.
+
+    Raises:
+        InvalidCollectionException: If the collection is empty or does not exist.
+    """
     vectorstore = Chroma(
         embedding_function=embedding,
         persist_directory="./chroma_db",
@@ -149,6 +239,27 @@ def load_process_category_vectorstores(embedding: OpenAIEmbeddings):
 def get_vectorstores(
     embeddings: OpenAIEmbeddings,
 ) -> tuple[Chroma, Chroma] | tuple[None, None]:
+    """
+    Retrieves/creates vector stores for the APQC process categories and CWE data.
+
+    If `create_vector_db` is True, this function will create new vector stores
+    for process categories and CWE data using the provided embeddings. If the
+    `chroma_db` directory already exists, a `FileExistsError` will be raised.
+
+    If `create_vector_db` is False, this function will attempt to load existing
+    vector stores from disk. If the vector stores cannot be loaded due to an
+    `InvalidCollectionException`, the function will return a tuple of (None, None).
+
+    Args:
+        embeddings (OpenAIEmbeddings): The embeddings to use for creating or loading
+                                       the vector stores.
+
+    Returns:
+        tuple[Chroma, Chroma] | tuple[None, None]: A tuple containing the process
+                                                   category vector store and the
+                                                   CWE vector store, or (None, None)
+                                                   if loading the vector stores fails.
+    """
     if create_vector_db:
         if Path("./chroma_db").exists():
             raise FileExistsError(
@@ -181,6 +292,19 @@ def map_vulnerabilities_to_cwe(
     k: int = 1,
     impacts: list[str] = [],
 ) -> list[CweMapping]:
+    """
+    Retrieves top k CWE mappings for a list of vulnerabilities using a vector store for similarity search.
+    This function should be used as part of RAG-based operations to increase accuracy of the model's answers.
+
+    Args:
+        vulnerabilities (list[str]): A list of vulnerability descriptions.
+        vectorstore (VectorStore): An instance of a vector store used for similarity search.
+        k (int, optional): The number of top similar results to retrieve for each vulnerability. Defaults to 1.
+        impacts (list[str], optional): A list of impact descriptions corresponding to the vulnerabilities. Defaults to an empty list.
+
+    Returns:
+        list[CweMapping]: A list of CweMapping objects containing the mapping results for each vulnerability.
+    """
     mapping_results: list[CweMapping] = []
     for i, vuln in enumerate(vulnerabilities):
         results = vectorstore.similarity_search_with_score(vuln, k=k)
@@ -203,6 +327,18 @@ def map_vulnerabilities_to_cwe(
 def map_vulns_to_processes(
     vulnerabilities: list[str], vectorstore: VectorStore, k: int = 1
 ) -> list[ProcessMapping]:
+    """
+    Retrieves top k business processes for a list of vulnerabilities using a vector store for similarity search.
+    This function should be used as part of RAG-based operations to increase accuracy of the model's answers.
+
+    Args:
+        vulnerabilities (list[str]): A list of vulnerability descriptions.
+        vectorstore (VectorStore): An instance of a vector store to perform similarity searches.
+        k (int, optional): The number of top similar processes to retrieve for each vulnerability. Defaults to 1.
+
+    Returns:
+        list[ProcessMapping]: A list of ProcessMapping objects containing the mapping results.
+    """
     mapping_results: list[ProcessMapping] = []
     for vuln in vulnerabilities:
         results = vectorstore.similarity_search_with_score(vuln, k=k)
@@ -223,6 +359,18 @@ def prompt_model(
     retriever: VectorStoreRetriever,
     question: str,
 ):
+    """
+    Wrapper function to generate a response to a given question using a language model, retriever and system prompt.
+
+    Args:
+        llm (ChatOpenAI): The language model to use for generating responses.
+        system_prompt (str): The system prompt to provide context to the language model.
+        retriever (VectorStoreRetriever): The retriever to use for fetching relevant documents.
+        question (str): The question to generate a response for.
+
+    Returns:
+        str: The generated response to the question.
+    """
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", system_prompt),
@@ -237,6 +385,25 @@ def prompt_model(
 
 
 def get_relevant_details(response: str):
+    """
+    Extracts and returns relevant details from a given response string.
+    This function should be used to parse the response generated by the language model.
+
+    The function searches for patterns of vulnerabilities, their descriptions,
+    and impacts within the response string. It ensures that the number of
+    vulnerabilities, descriptions, and impacts are equal. If they are not,
+    the function returns None for both details and impacts.
+
+    Args:
+        response (str): The response string containing vulnerability details.
+
+    Returns:
+        tuple: A tuple containing two elements:
+            - details (list[str]): A list of strings where each string is a
+              combination of a vulnerability and its corresponding description.
+            - impacts (list[str]): A list of impact strings corresponding to
+              each vulnerability.
+    """
     vulns = re.findall(r"Vulnerability: (.+)", response)
     descriptions = re.findall(r"Explanation: (.+)", response)
     impacts = re.findall(r"Impact: (.+)", response)
@@ -249,6 +416,16 @@ def get_relevant_details(response: str):
 
 
 def get_mitigation(mitigation_data: list[dict[str, str]], cwe_id: str) -> list[str]:
+    """
+    Extracts and returns a list of mitigation descriptions for a given CWE ID.
+
+    Args:
+        mitigation_data (list[dict[str, str]]): A list of dictionaries containing mitigation data.
+        cwe_id (str): The CWE ID for which to extract mitigation descriptions.
+
+    Returns:
+        list[str]: A list of descriptions of potential mitigations for the given CWE ID.
+    """
     # extract descriptions of potential mitigations only, ignoring phases
     potential_mitigations = "".join(
         [
@@ -261,7 +438,21 @@ def get_mitigation(mitigation_data: list[dict[str, str]], cwe_id: str) -> list[s
     return mitigations
 
 
-def process_pdf(pdf_path: str):
+def process_pdf(pdf_path: str) -> list[str]:
+    """
+    Processes a PDF document to identify vulnerabilities, map them to business processes and CWEs, and suggest mitigations.
+    This is the core of the engine that processes the PDF document and generates responses based on the identified vulnerabilities.
+
+    Args:
+        pdf_path (str): The path to the PDF document to be processed.
+
+    Returns:
+        list[str]: A list of responses generated during the processing, including identified vulnerabilities, mapped business processes, CWE rankings, and suggested mitigations.
+
+    Raises:
+        FileNotFoundError: If the vector databases are not found.
+        RuntimeError: If there is an error parsing the response.
+    """
     out: list[str] = []
     logger = logging.getLogger("gai")
 
@@ -269,8 +460,6 @@ def process_pdf(pdf_path: str):
     llm_mini = ChatOpenAI(model="gpt-4o-mini")
     embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
 
-    # store_category = get_cwe_vectorstore(embeddings)
-    # store_process = get_category_vectorstore(embeddings)
     store_process, store_cwe = get_vectorstores(embeddings)
     if store_cwe is None or store_process is None:
         raise FileNotFoundError("Vector db not found. Please build the db first.")
@@ -426,7 +615,10 @@ def process_pdf(pdf_path: str):
         vulnerabilities = re.findall(r"Vulnerability Identified: (.+)", response)
         cwe_id = re.findall(r"CWE ID: (.+)", response)
         if len(vulnerabilities) != len(cwe_id):
-            return None, None
+            raise RuntimeError(
+                "Number of vulnerabilities and CWE IDs do not match. Check the response format.",
+                response,
+            )
         vuln_mitigations: list[str] = []
         for i in range(len(vulnerabilities)):
             mitigation = "".join(get_mitigation(mitigations, cwe_id[i].strip()))
@@ -456,12 +648,26 @@ def process_pdf(pdf_path: str):
 
 
 def eval_mode(pdf_paths: str):
+    """
+    Processes all PDF files in the given directory and writes the results to log files.
+
+    Args:
+        pdf_paths (str): The path to the directory containing PDF files.
+
+    The function searches for all PDF files in the specified directory and its subdirectories.
+    For each PDF file found, it processes the file twice and writes the results to separate log files.
+    The log files are named based on the original PDF file name with a suffix `_01.log` and `_02.log`.
+    """
     pdfs = Path(pdf_paths).rglob("*.pdf")
 
     for pdf in pdfs:
         for i in range(1, 3):
             out_path = Path(pdf_paths) / f"{pdf.name[:-4]}_0{i}.log"
-            pdf_result = process_pdf(pdf.as_posix())
+            try:
+                pdf_result = process_pdf(pdf.as_posix())
+            except Exception as e:
+                logger.error(f"Error processing {pdf.name}: {e}")
+                continue
             with open(out_path, "w") as f:
                 f.write("\n\n".join(pdf_result))
 
