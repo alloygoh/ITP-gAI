@@ -193,7 +193,7 @@ def process_pdf(pdf_path: str):
 
     # Step 1: Map vulnerabilities to process categories
     system_prompt_process = """
-    You should use the AQPC PCF IDs to perform the mapping.
+    You should use the APQC PCF IDs to perform the mapping.
     Focus only on the PCF IDs from the 13 categories.
 
     Your response should match the following format:
